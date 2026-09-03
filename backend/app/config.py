@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     app_env: AppEnvironment = AppEnvironment.DEVELOPMENT
     log_level: str = "INFO"
     sql_echo: bool = False
-    frontend_origin: HttpUrl = HttpUrl("http://127.0.0.1:5173")
+    frontend_origin: HttpUrl = HttpUrl("https://shopy-ochre.vercel.app")
 
     database_url: SecretStr
     migration_database_url: SecretStr | None = None
@@ -120,11 +120,8 @@ class Settings(BaseSettings):
 
     @property
     def allowed_frontend_origins(self) -> tuple[str, ...]:
-        """Return exact browser origins allowed for the current environment."""
-        origins = {str(self.frontend_origin).rstrip("/")}
-        if self.app_env is AppEnvironment.DEVELOPMENT:
-            origins.update({"http://localhost:5173", "http://127.0.0.1:5173"})
-        return tuple(sorted(origins))
+        """Return the exact deployed browser origin allowed by CORS and CSRF checks."""
+        return (str(self.frontend_origin).rstrip("/"),)
 
     @staticmethod
     def _validate_postgresql_url(secret_url: SecretStr) -> None:

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import logoPng from './assets/logo.png'
-import { API_BASE_URL, fetchCatalog, fetchHealth, sendAgentChat } from './api'
+import { fetchCatalog, fetchHealth, sendAgentChat } from './api'
 import AccountCenter from './AccountCenter'
 import type {
   AgentChatResponse,
@@ -397,7 +397,7 @@ function App() {
         <button type="button" onClick={() => navigate('home')} aria-label="Shopy home">
           <img src={logoPng} alt="Shopy" className="footer-logo" />
         </button>
-        <a href={`${API_BASE_URL}/docs`} target="_blank" rel="noreferrer">API docs ↗</a>
+        <a href="https://shopy-zewo.onrender.com/docs" target="_blank" rel="noreferrer">API docs ↗</a>
       </footer>
       {toast ? <div className="cart-toast"><Icon name="check" />{toast}</div> : null}
       <FloatingAgent open={agentOpen} onOpen={setAgentOpen} onAdd={addToCart} />

@@ -21,7 +21,7 @@ services:
       - key: SQL_ECHO
         value: "false"
       - key: FRONTEND_ORIGIN
-        sync: false
+        value: https://shopy-ochre.vercel.app
       - key: DATABASE_URL
         sync: false
       - key: DATABASE_POOL_SIZE
