@@ -253,7 +253,7 @@ function CartView({ cart, onQuantity, onRemove, onBrowse }: CartProps) {
               </article>
             ))}
           </div>
-          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Not calculated</strong></div><div className="order-total"><span>Estimated total</span><strong>{formatPrice(total)}</strong></div><button type="button" disabled>Checkout not connected</button><p>Shopy does not simulate payment. Razorpay stays disabled until a signed purchase workflow exists.</p><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
+          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Not calculated</strong></div><div className="order-total"><span>Estimated total</span><strong>{formatPrice(total)}</strong></div><button type="button" disabled>Checkout not connected</button><p>Shopy does not simulate payment. The payment gateway stays disabled until a signed purchase workflow exists.</p><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
         </section>
       )}
     </main>
