@@ -1,0 +1,50 @@
+# Secrets and local environment
+.env
+.env.*
+
+.gitignore
+
+# Python environments and bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and package output
+build/
+dist/
+*.egg-info/
+
+# Tool caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Logs and local database artifacts
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# Neon stores the live database remotely. Do not push local/seed data exports.
+# Keep database/alembic.ini, database/migrations/, database/scripts/, and
+# database/__init__.py tracked because Render and future schema changes need them.
+database/data/
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# React frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+
+# Deployment CLI state
+.vercel/
