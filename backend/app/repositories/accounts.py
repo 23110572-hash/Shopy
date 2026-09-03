@@ -6,8 +6,8 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.account import AuthSession, ShoppingAgentControls
-from backend.app.models.user import User
+from app.models.account import AuthSession, ShoppingAgentControls
+from app.models.user import User
 
 
 class AccountRepository:

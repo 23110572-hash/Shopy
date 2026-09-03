@@ -6,7 +6,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from backend.app.models.product import ProductCategory
+from app.models.product import ProductCategory
 
 
 class CatalogProduct(BaseModel):

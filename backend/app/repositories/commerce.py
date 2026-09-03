@@ -11,7 +11,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.commerce import (
+from app.models.commerce import (
     AuditEntry,
     PaymentAttempt,
     PaymentStatus,
@@ -22,7 +22,7 @@ from backend.app.models.commerce import (
     ReservationStatus,
     WebhookEvent,
 )
-from backend.app.models.purchase_run import PurchaseRun
+from app.models.purchase_run import PurchaseRun
 
 ZERO_HASH = "0" * 64
 

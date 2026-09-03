@@ -13,8 +13,8 @@ from pydantic import (
     model_validator,
 )
 
-from backend.app.models.product import ProductCategory
-from backend.app.models.user import UserRole
+from app.models.product import ProductCategory
+from app.models.user import UserRole
 
 MAX_MONEY_PAISE = 1_000_000_000
 

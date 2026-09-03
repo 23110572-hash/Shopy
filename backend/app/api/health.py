@@ -6,9 +6,9 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from backend.app.config import Settings
-from backend.app.database import Database, DatabaseUnavailable
-from backend.app.dependencies import get_database, get_runtime_settings
+from app.config import Settings
+from app.database import Database, DatabaseUnavailable
+from app.dependencies import get_database, get_runtime_settings
 
 router = APIRouter(tags=["health"])
 DatabaseDependency = Annotated[Database, Depends(get_database)]

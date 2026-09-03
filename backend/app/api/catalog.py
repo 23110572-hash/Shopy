@@ -5,11 +5,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from backend.app.database import Database
-from backend.app.dependencies import get_database
-from backend.app.models.product import ProductCategory
-from backend.app.repositories.products import ProductRepository
-from backend.app.schemas.catalog import CatalogPage, CatalogProduct
+from app.database import Database
+from app.dependencies import get_database
+from app.models.product import ProductCategory
+from app.repositories.products import ProductRepository
+from app.schemas.catalog import CatalogPage, CatalogProduct
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 product_router = APIRouter(prefix="/api/products", tags=["catalog"])

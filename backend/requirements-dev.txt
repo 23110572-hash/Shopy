@@ -1,9 +1,0 @@
-# Runtime plus fully pinned local quality tooling.
--r requirements.txt
-
-ast-serialize==0.9.0
-librt==0.15.0 ; platform_python_implementation != "PyPy"
-mypy==2.3.1
-mypy-extensions==1.1.0
-pathspec==1.1.1
-ruff==0.16.5

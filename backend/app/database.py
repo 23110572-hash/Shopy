@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from backend.app.config import Settings
+from app.config import Settings
 
 
 class DatabaseUnavailable(RuntimeError):

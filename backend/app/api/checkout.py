@@ -5,18 +5,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
-from backend.app.config import Settings
-from backend.app.database import Database
-from backend.app.dependencies import get_database, get_runtime_settings
-from backend.app.schemas.checkout import (
+from app.config import Settings
+from app.database import Database
+from app.dependencies import get_database, get_runtime_settings
+from app.schemas.checkout import (
     CheckoutCallbackRequest,
     CheckoutSessionResponse,
     CreateCheckoutRequest,
     PurchaseRunStatusResponse,
     RazorpayWebhookResponse,
 )
-from backend.app.security import CsrfPrincipalDependency, CurrentPrincipalDependency
-from backend.app.services.checkout import CheckoutService, CheckoutServiceError
+from app.security import CsrfPrincipalDependency, CurrentPrincipalDependency
+from app.services.checkout import CheckoutService, CheckoutServiceError
 
 router = APIRouter(tags=["checkout"])
 MAX_WEBHOOK_BODY_BYTES = 1_048_576

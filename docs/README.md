@@ -4,9 +4,8 @@ Shopy is a production-shaped, single-merchant autonomous-commerce application fo
 
 ## Repository layout
 
-- `backend/` — FastAPI application, operational validation scripts, pinned Python requirements, and the ignored local virtual environment
+- `backend/` — standalone Render service containing the FastAPI app, Alembic migrations, operational scripts, pinned requirements, and Python version
 - `frontend/` — React + TypeScript + Vite application
-- `database/` — Alembic migration source and database operations; the live database itself is hosted by Neon
 - `docs/` — architecture and project documentation
 - repository root — deployment and shared tool configuration
 
@@ -23,21 +22,21 @@ Shopy is a production-shaped, single-merchant autonomous-commerce application fo
 
 ## Dependency manifests
 
-- `backend/requirements.txt` fully pins the Render/backend runtime graph.
-- `backend/requirements-dev.txt` includes the runtime graph plus pinned Ruff and mypy tooling.
+- `backend/requirements.txt` is the single fully pinned backend dependency manifest. It includes the Render runtime graph plus Ruff and mypy tooling.
 - `frontend/package.json` pins direct frontend packages and `frontend/package-lock.json` locks the complete npm graph used by Vercel's `npm ci` install.
 
 ## Local setup
 
-Run all commands below from the repository root.
+Run the initial environment commands from the repository root, then run backend commands from `backend/`.
 
 1. Create an ignored root `.env` and configure the server-side values listed below. Never commit or print this file.
-2. Create and activate the backend-local Python 3.12 virtual environment, then install the pinned development graph:
+2. Create and activate the backend-local Python 3.12 virtual environment, enter the standalone backend root, and install its single pinned graph:
 
    ```powershell
    python -m venv backend/.venv
    .\backend\.venv\Scripts\Activate.ps1
-   python -m pip install --requirement backend/requirements-dev.txt
+   Set-Location backend
+   python -m pip install --requirement requirements.txt
    ```
 
 3. Apply the tracked schema migrations to Neon:
@@ -46,7 +45,7 @@ Run all commands below from the repository root.
    python -m alembic -c database/alembic.ini upgrade head
    ```
 
-   Neon stores the live rows, but `database/alembic.ini` and `database/migrations/` must remain in source control so Render and future releases can verify and evolve that schema. Local exports and `database/data/` are ignored.
+   Neon stores the live rows, but `database/alembic.ini` and `database/migrations/` remain inside the standalone backend source so Render and future releases can evolve that schema. Local exports and `database/data/` are ignored.
 
 4. The verified catalogue already lives in Neon and is never recreated at application startup. If a new database must be initialized, restore an approved catalogue source locally before running the explicit seed command:
 
@@ -54,23 +53,24 @@ Run all commands below from the repository root.
    python -m database.scripts.seed_catalog
    ```
 
-5. Run backend validation:
+5. Run backend validation when required:
 
    ```powershell
-   python -m ruff check --target-version py312 --line-length 100 --select E,F,I,B,UP,SIM,RUF backend database
-   python -m mypy backend database/migrations/env.py
-   python -m backend.scripts.validate_foundation
+   python -m ruff check --target-version py312 --line-length 100 --select E,F,I,B,UP,SIM,RUF app database scripts
+   python -m mypy --config-file ../mypy.ini app database/migrations/env.py scripts
+   python -m scripts.validate_foundation
    ```
 
 6. Start the API manually:
 
    ```powershell
-   python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+   python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
    ```
 
-7. Install the exact frontend graph and build it:
+7. Return to the repository root, install the exact frontend graph, and build it:
 
    ```powershell
+   Set-Location ..
    npm --prefix frontend ci
    npm --prefix frontend run build
    ```
@@ -94,8 +94,8 @@ The application rejects Razorpay live keys. Test doubles belong only in isolated
 The deployment keeps all provider and database secrets on Render. Vercel receives only the non-secret Render API origin and proxies browser API requests through the Vercel origin, which keeps the existing HttpOnly session and CSRF cookies same-origin from the browser's perspective.
 
 1. Create the Vercel project with **Root Directory** set to `frontend`. Reserve or note its production URL, but do not put backend secrets in Vercel.
-2. Create a Render Blueprint from the repository-root `render.yaml`. Supply every value marked `sync: false` in the Render Dashboard. `FRONTEND_ORIGIN` must be the exact HTTPS Vercel production origin, with no path or trailing slash. Use the Neon TLS URL for `DATABASE_URL`.
-3. Render installs `backend/requirements.txt` with pip, runs tracked Alembic migrations in `preDeployCommand`, starts FastAPI on Render's `$PORT`, and checks `/health`. Catalogue seeding remains an explicit operation and is never run automatically during deployment.
+2. Create a Render Blueprint from the repository-root `render.yaml`. It sets **Root Directory** to `backend`. Supply every value marked `sync: false` in the Render Dashboard. `FRONTEND_ORIGIN` must be the exact HTTPS Vercel production origin, with no path or trailing slash. Use the Neon TLS URL for `DATABASE_URL`.
+3. From its backend root, Render installs `requirements.txt`, runs `database/alembic.ini` migrations in `preDeployCommand`, starts `app.main:app` on Render's `$PORT`, and checks `/health`. Catalogue seeding remains an explicit operation and is never run automatically during deployment.
 4. In Vercel, set `RENDER_API_ORIGIN` to the deployed Render origin, such as `https://your-shopy-api.onrender.com`, with no path. Do not set `VITE_API_BASE_URL` in production; the frontend intentionally uses same-origin `/api` and `/health` rewrites.
 5. Deploy Vercel. Configure the Razorpay Test Mode webhook URL directly against Render as `https://<render-host>/api/webhooks/razorpay` after that route is available. Store the matching webhook secret only in Render as `RAZORPAY_WEBHOOK_SECRET`.
 

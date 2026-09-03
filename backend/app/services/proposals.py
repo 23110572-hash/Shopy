@@ -7,20 +7,20 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.config import Settings
-from backend.app.domain.purchase_state import PurchaseState, ensure_transition
-from backend.app.models.account import ShoppingAgentControls
-from backend.app.models.commerce import PurchaseQuote
-from backend.app.models.purchase_run import PurchaseRun
-from backend.app.repositories.commerce import CommerceRepository
-from backend.app.repositories.products import ProductRepository
-from backend.app.schemas.agent import (
+from app.config import Settings
+from app.domain.purchase_state import PurchaseState, ensure_transition
+from app.models.account import ShoppingAgentControls
+from app.models.commerce import PurchaseQuote
+from app.models.purchase_run import PurchaseRun
+from app.repositories.commerce import CommerceRepository
+from app.repositories.products import ProductRepository
+from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
     ProposalHardLimits,
     PurchaseProposal,
 )
-from backend.app.schemas.catalog import CatalogProduct
+from app.schemas.catalog import CatalogProduct
 
 PROPOSAL_TTL = timedelta(minutes=10)
 

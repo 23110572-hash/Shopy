@@ -6,8 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.app.models.product import ProductCategory
-from backend.app.schemas.catalog import CatalogProduct
+from app.models.product import ProductCategory
+from app.schemas.catalog import CatalogProduct
 
 AgentIntentSource = Literal["deterministic", "openrouter", "deterministic_fallback"]
 AgentDecisionSource = Literal["deterministic", "openrouter", "deterministic_fallback"]

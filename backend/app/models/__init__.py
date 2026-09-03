@@ -1,8 +1,8 @@
 """Import all ORM models so metadata is complete for Alembic."""
 
-from backend.app.models.account import AuthSession, ShoppingAgentControls
-from backend.app.models.base import Base
-from backend.app.models.commerce import (
+from app.models.account import AuthSession, ShoppingAgentControls
+from app.models.base import Base
+from app.models.commerce import (
     AuditEntry,
     PaymentAttempt,
     PaymentStatus,
@@ -14,10 +14,10 @@ from backend.app.models.commerce import (
     WebhookEvent,
     WebhookProcessingStatus,
 )
-from backend.app.models.merchant import Merchant
-from backend.app.models.product import Product, ProductCategory
-from backend.app.models.purchase_run import PurchaseRun
-from backend.app.models.user import User, UserRole
+from app.models.merchant import Merchant
+from app.models.product import Product, ProductCategory
+from app.models.purchase_run import PurchaseRun
+from app.models.user import User, UserRole
 
 __all__ = [
     "AuditEntry",

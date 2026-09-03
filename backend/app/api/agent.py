@@ -4,19 +4,19 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 
-from backend.app.agents.shopping_graph import ShoppingGraph
-from backend.app.config import Settings
-from backend.app.database import Database
-from backend.app.dependencies import get_database, get_runtime_settings
-from backend.app.gateways.llm import LLMGateway
-from backend.app.gateways.openrouter import OpenRouterGateway
-from backend.app.models.account import ShoppingAgentControls
-from backend.app.models.product import ProductCategory
-from backend.app.repositories.accounts import AccountRepository
-from backend.app.repositories.products import ProductRepository
-from backend.app.schemas.agent import AgentChatRequest, AgentChatResponse, AgentRuntimeControls
-from backend.app.security import OptionalPrincipalDependency
-from backend.app.services.proposals import ProposalStaleError, persist_purchase_proposal
+from app.agents.shopping_graph import ShoppingGraph
+from app.config import Settings
+from app.database import Database
+from app.dependencies import get_database, get_runtime_settings
+from app.gateways.llm import LLMGateway
+from app.gateways.openrouter import OpenRouterGateway
+from app.models.account import ShoppingAgentControls
+from app.models.product import ProductCategory
+from app.repositories.accounts import AccountRepository
+from app.repositories.products import ProductRepository
+from app.schemas.agent import AgentChatRequest, AgentChatResponse, AgentRuntimeControls
+from app.security import OptionalPrincipalDependency
+from app.services.proposals import ProposalStaleError, persist_purchase_proposal
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 DatabaseDependency = Annotated[Database, Depends(get_database)]

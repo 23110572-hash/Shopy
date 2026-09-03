@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import httpx
 
-from backend.app.config import Settings
+from app.config import Settings
 
 
 class LLMProviderError(RuntimeError):

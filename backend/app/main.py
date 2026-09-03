@@ -6,14 +6,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.api.account import router as account_router
-from backend.app.api.agent import router as agent_router
-from backend.app.api.catalog import product_router
-from backend.app.api.catalog import router as catalog_router
-from backend.app.api.checkout import router as checkout_router
-from backend.app.api.health import router as health_router
-from backend.app.config import Settings, get_settings
-from backend.app.database import Database, DatabaseUnavailable
+from app.api.account import router as account_router
+from app.api.agent import router as agent_router
+from app.api.catalog import product_router
+from app.api.catalog import router as catalog_router
+from app.api.checkout import router as checkout_router
+from app.api.health import router as health_router
+from app.config import Settings, get_settings
+from app.database import Database, DatabaseUnavailable
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

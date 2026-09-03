@@ -2,8 +2,8 @@
 
 from fastapi import Request
 
-from backend.app.config import Settings
-from backend.app.database import Database
+from app.config import Settings
+from app.database import Database
 
 
 def get_database(request: Request) -> Database:

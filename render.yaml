@@ -4,9 +4,10 @@ services:
     runtime: python
     plan: free
     region: ohio
-    buildCommand: "python -m pip install --disable-pip-version-check --no-cache-dir -r backend/requirements.txt"
+    rootDir: backend
+    buildCommand: "python -m pip install --disable-pip-version-check --no-cache-dir -r requirements.txt"
     preDeployCommand: "python -m alembic -c database/alembic.ini upgrade head"
-    startCommand: 'python -m uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"'
+    startCommand: 'python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips="*"'
     healthCheckPath: /health
     autoDeployTrigger: commit
     maxShutdownDelaySeconds: 30

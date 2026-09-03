@@ -11,12 +11,12 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from fastapi import Depends, HTTPException, Request, Response, status
 
-from backend.app.config import AppEnvironment, Settings
-from backend.app.database import Database
-from backend.app.dependencies import get_database, get_runtime_settings
-from backend.app.models.account import AuthSession
-from backend.app.models.user import User
-from backend.app.repositories.accounts import AccountRepository
+from app.config import AppEnvironment, Settings
+from app.database import Database
+from app.dependencies import get_database, get_runtime_settings
+from app.models.account import AuthSession
+from app.models.user import User
+from app.repositories.accounts import AccountRepository
 
 SESSION_COOKIE = "shopy_session"
 CSRF_COOKIE = "shopy_csrf"

@@ -10,14 +10,14 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import make_url
 
-from backend.app.config import Settings, get_settings
-from backend.app.domain.money import MoneyPaise
-from backend.app.domain.purchase_state import (
+from app.config import Settings, get_settings
+from app.domain.money import MoneyPaise
+from app.domain.purchase_state import (
     InvalidPurchaseTransition,
     PurchaseState,
     ensure_transition,
 )
-from backend.app.main import create_app
+from app.main import create_app
 
 EXPECTED_TABLES = {
     "alembic_version",

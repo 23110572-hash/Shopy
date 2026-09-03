@@ -2,8 +2,6 @@
 .env
 .env.*
 
-.gitignore
-
 # Python environments and bytecode
 .venv/
 venv/
@@ -31,9 +29,9 @@ htmlcov/
 *.sqlite3
 
 # Neon stores the live database remotely. Do not push local/seed data exports.
-# Keep database/alembic.ini, database/migrations/, database/scripts/, and
-# database/__init__.py tracked because Render and future schema changes need them.
-database/data/
+# Keep backend/database/alembic.ini, backend/database/migrations/,
+# backend/database/scripts/, and backend/database/__init__.py tracked.
+backend/database/data/
 
 # Editor and OS files
 .vscode/

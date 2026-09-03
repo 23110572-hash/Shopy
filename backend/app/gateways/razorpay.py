@@ -8,7 +8,7 @@ from typing import Any, Protocol, cast, runtime_checkable
 
 import httpx
 
-from backend.app.config import Settings
+from app.config import Settings
 
 RAZORPAY_API_BASE_URL = "https://api.razorpay.com"
 

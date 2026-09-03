@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models.product import Product, ProductCategory
+from app.models.product import Product, ProductCategory
 
 
 class ProductRepository:

@@ -12,15 +12,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.config import Settings
-from backend.app.database import Database
-from backend.app.dependencies import get_database, get_runtime_settings
-from backend.app.models.account import AuthSession, ShoppingAgentControls
-from backend.app.models.commerce import AuditEntry, ProviderOrderOperationState
-from backend.app.models.user import User, UserRole
-from backend.app.repositories.accounts import AccountRepository
-from backend.app.repositories.commerce import CommerceRepository, ZERO_HASH
-from backend.app.schemas.account import (
+from app.config import Settings
+from app.database import Database
+from app.dependencies import get_database, get_runtime_settings
+from app.models.account import AuthSession, ShoppingAgentControls
+from app.models.commerce import AuditEntry, ProviderOrderOperationState
+from app.models.user import User, UserRole
+from app.repositories.accounts import AccountRepository
+from app.repositories.commerce import ZERO_HASH, CommerceRepository
+from app.schemas.account import (
     AccountProfile,
     AgentControlsResponse,
     AgentControlsUpdate,
@@ -36,7 +36,7 @@ from backend.app.schemas.account import (
     TransactionHistoryItem,
     TransactionHistoryResponse,
 )
-from backend.app.security import (
+from app.security import (
     SESSION_COOKIE,
     CsrfPrincipalDependency,
     CurrentPrincipalDependency,

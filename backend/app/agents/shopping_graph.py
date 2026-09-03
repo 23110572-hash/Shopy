@@ -10,11 +10,11 @@ from uuid import UUID
 from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
-from backend.app.gateways.llm import LLMGateway
-from backend.app.gateways.openrouter import LLMProviderError
-from backend.app.models.product import ProductCategory
-from backend.app.repositories.products import ProductRepository
-from backend.app.schemas.agent import (
+from app.gateways.llm import LLMGateway
+from app.gateways.openrouter import LLMProviderError
+from app.models.product import ProductCategory
+from app.repositories.products import ProductRepository
+from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentDecisionSource,
@@ -25,7 +25,7 @@ from backend.app.schemas.agent import (
     ProductComparisonDecision,
     ShoppingIntent,
 )
-from backend.app.schemas.catalog import CatalogProduct
+from app.schemas.catalog import CatalogProduct
 
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _PRICE_PATTERN = re.compile(

@@ -11,17 +11,17 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from backend.app.config import Settings
-from backend.app.database import Database
-from backend.app.domain.purchase_state import PurchaseState, ensure_transition
-from backend.app.gateways.razorpay import (
+from app.config import Settings
+from app.database import Database
+from app.domain.purchase_state import PurchaseState, ensure_transition
+from app.gateways.razorpay import (
     ProviderOrder,
     ProviderPayment,
     RazorpayGatewayError,
     RazorpayRejectedError,
     RazorpayStandardCheckoutGateway,
 )
-from backend.app.models.commerce import (
+from app.models.commerce import (
     PaymentAttempt,
     PaymentStatus,
     ProviderOrderOperationState,
@@ -32,13 +32,13 @@ from backend.app.models.commerce import (
     WebhookEvent,
     WebhookProcessingStatus,
 )
-from backend.app.models.merchant import Merchant
-from backend.app.models.purchase_run import PurchaseRun
-from backend.app.models.user import User
-from backend.app.repositories.accounts import AccountRepository
-from backend.app.repositories.commerce import CommerceRepository
-from backend.app.repositories.products import ProductRepository
-from backend.app.schemas.checkout import (
+from app.models.merchant import Merchant
+from app.models.purchase_run import PurchaseRun
+from app.models.user import User
+from app.repositories.accounts import AccountRepository
+from app.repositories.commerce import CommerceRepository
+from app.repositories.products import ProductRepository
+from app.schemas.checkout import (
     CheckoutCallbackRequest,
     CheckoutSessionResponse,
     PurchaseRunStatusResponse,
@@ -366,6 +366,13 @@ class CheckoutService:
                     "Webhook was verified but provider reconciliation failed",
                     status_code=503,
                 ) from exc
+            except CheckoutServiceError:
+                await self._finish_webhook(
+                    provider_event_id,
+                    WebhookProcessingStatus.FAILED,
+                    error="Provider state failed authoritative local validation",
+                )
+                raise
 
             await self._finish_webhook(
                 provider_event_id,
@@ -687,7 +694,6 @@ class CheckoutService:
                     PurchaseState.ORDER_CREATED,
                     provider_write_started=True,
                 )
-            run.payment_state = provider_order.status.upper()
             await repository.append_audit(
                 run_id=run.id,
                 actor="RAZORPAY",
@@ -729,7 +735,7 @@ class CheckoutService:
             if run is None or order is None:
                 return
             order.operation_state = ProviderOrderOperationState.UNKNOWN.value
-            order.provider_status = "unknown"
+            order.provider_status = None
             if run.state == PurchaseState.RESERVED:
                 run.state = ensure_transition(
                     run.state,
@@ -761,7 +767,7 @@ class CheckoutService:
             if run is None or order is None:
                 return
             order.operation_state = ProviderOrderOperationState.UNKNOWN.value
-            order.provider_status = "rejected"
+            order.provider_status = None
             if reservation is not None and reservation.status == ReservationStatus.ACTIVE.value:
                 reservation.status = ReservationStatus.RELEASED.value
                 reservation.released_at = datetime.now(UTC)
@@ -824,19 +830,20 @@ class CheckoutService:
             )
             if run is None:
                 return
-            if run.state == PurchaseState.ORDER_CREATED:
-                run.state = ensure_transition(
-                    run.state,
-                    PurchaseState.PAYMENT_INITIATED,
-                    provider_write_started=True,
-                )
-            if run.state == PurchaseState.PAYMENT_INITIATED:
-                run.state = ensure_transition(
-                    run.state,
-                    PurchaseState.PAYMENT_UNKNOWN,
-                    provider_write_started=True,
-                )
-            run.payment_state = PaymentStatus.UNKNOWN.value
+            if run.state != PurchaseState.CAPTURED:
+                if run.state == PurchaseState.ORDER_CREATED:
+                    run.state = ensure_transition(
+                        run.state,
+                        PurchaseState.PAYMENT_INITIATED,
+                        provider_write_started=True,
+                    )
+                if run.state == PurchaseState.PAYMENT_INITIATED:
+                    run.state = ensure_transition(
+                        run.state,
+                        PurchaseState.PAYMENT_UNKNOWN,
+                        provider_write_started=True,
+                    )
+                run.payment_state = PaymentStatus.UNKNOWN.value
             await repository.append_audit(
                 run_id=run.id,
                 actor="SYSTEM",
@@ -857,11 +864,14 @@ class CheckoutService:
         source: str,
     ) -> None:
         now = datetime.now(UTC)
+        payment_payload_hash = _canonical_hash(asdict(payment))
         async with self._database.session() as session:
             repository = CommerceRepository(session)
             run = await repository.get_run(run_id, for_update=True)
             order_result = await session.execute(
-                select(RazorpayOrder).where(RazorpayOrder.id == order_record_id).with_for_update()
+                select(RazorpayOrder)
+                .where(RazorpayOrder.id == order_record_id)
+                .with_for_update()
             )
             order = order_result.scalar_one_or_none()
             quote = await repository.get_quote_for_run(run_id)
@@ -872,31 +882,47 @@ class CheckoutService:
                     "Payment context is missing",
                     status_code=500,
                 )
+
+            expected_order_id = order.provider_order_id
             if (
-                payment.order_id != order.provider_order_id
+                not 1 <= len(payment.payment_id) <= 64
+                or (payment.method is not None and len(payment.method) > 40)
+                or (payment.error_code is not None and len(payment.error_code) > 120)
+            ):
+                raise CheckoutServiceError(
+                    "PROVIDER_PAYMENT_INVALID",
+                    "Razorpay returned payment fields outside supported bounds",
+                    status_code=502,
+                )
+
+            if (
+                expected_order_id is None
+                or payment.order_id != expected_order_id
                 or payment.amount_paise != quote.total_amount_paise
                 or payment.currency != quote.currency
             ):
-                if run.state == PurchaseState.ORDER_CREATED:
-                    run.state = ensure_transition(
-                        run.state,
-                        PurchaseState.PAYMENT_INITIATED,
-                        provider_write_started=True,
-                    )
-                if run.state == PurchaseState.PAYMENT_INITIATED:
-                    run.state = ensure_transition(
-                        run.state,
-                        PurchaseState.PAYMENT_UNKNOWN,
-                        provider_write_started=True,
-                    )
-                run.payment_state = PaymentStatus.UNKNOWN.value
-                run.terminal_reason = "Provider payment facts did not match the immutable quote."
+                mismatch_reason = "Provider payment facts did not match the immutable quote."
+                if run.state != PurchaseState.CAPTURED:
+                    if run.state == PurchaseState.ORDER_CREATED:
+                        run.state = ensure_transition(
+                            run.state,
+                            PurchaseState.PAYMENT_INITIATED,
+                            provider_write_started=True,
+                        )
+                    if run.state == PurchaseState.PAYMENT_INITIATED:
+                        run.state = ensure_transition(
+                            run.state,
+                            PurchaseState.PAYMENT_UNKNOWN,
+                            provider_write_started=True,
+                        )
+                    run.payment_state = PaymentStatus.UNKNOWN.value
+                    run.terminal_reason = mismatch_reason
                 await repository.append_audit(
                     run_id=run.id,
                     actor="SYSTEM",
                     action="PAYMENT_FACT_MISMATCH",
                     outcome="ERROR",
-                    explanation=run.terminal_reason,
+                    explanation=mismatch_reason,
                     details={
                         "provider_payment_id": payment.payment_id,
                         "source": source,
@@ -916,7 +942,7 @@ class CheckoutService:
                     purchase_run_id=run.id,
                     razorpay_order_id=order.id,
                     provider_payment_id=payment.payment_id,
-                    provider_order_id=payment.order_id or order.provider_order_id or "",
+                    provider_order_id=expected_order_id,
                     amount_paise=payment.amount_paise,
                     currency=payment.currency,
                     status=normalized_status,
@@ -924,7 +950,7 @@ class CheckoutService:
                     payment_method=payment.method,
                     error_code=payment.error_code,
                     error_description=payment.error_description,
-                    payload_hash=_canonical_hash(asdict(payment)),
+                    payload_hash=payment_payload_hash,
                     provider_created_at=(
                         datetime.fromtimestamp(payment.created_at_epoch, tz=UTC)
                         if payment.created_at_epoch is not None
@@ -932,19 +958,30 @@ class CheckoutService:
                     ),
                 )
                 session.add(existing)
-            elif existing.status != PaymentStatus.CAPTURED.value:
-                existing.status = normalized_status
-                existing.captured = payment.captured
-                existing.payment_method = payment.method
-                existing.error_code = payment.error_code
-                existing.error_description = payment.error_description
-                existing.payload_hash = _canonical_hash(asdict(payment))
+            else:
+                if (
+                    existing.purchase_run_id != run.id
+                    or existing.razorpay_order_id != order.id
+                    or existing.provider_order_id != expected_order_id
+                    or existing.amount_paise != payment.amount_paise
+                    or existing.currency != payment.currency
+                ):
+                    raise CheckoutServiceError(
+                        "PAYMENT_OWNERSHIP_CONFLICT",
+                        "A provider payment ID is attached to different commerce facts",
+                        status_code=500,
+                    )
+                if existing.status != PaymentStatus.CAPTURED.value:
+                    existing.status = normalized_status
+                    existing.captured = payment.captured
+                    existing.payment_method = payment.method
+                    existing.error_code = payment.error_code
+                    existing.error_description = payment.error_description
+                    existing.payload_hash = payment_payload_hash
             if normalized_status == PaymentStatus.CAPTURED.value:
                 existing.captured_at = existing.captured_at or now
 
-            order.provider_status = (
-                "paid" if normalized_status == PaymentStatus.CAPTURED.value else "attempted"
-            )
+            purchase_already_captured = run.state == PurchaseState.CAPTURED
             if run.state == PurchaseState.ORDER_CREATED:
                 run.state = ensure_transition(
                     run.state,
@@ -972,6 +1009,7 @@ class CheckoutService:
                         PurchaseState.CAPTURED,
                         provider_write_started=True,
                     )
+                run.terminal_reason = None
                 if (
                     reservation is not None
                     and reservation.status != ReservationStatus.CAPTURED.value
@@ -988,6 +1026,8 @@ class CheckoutService:
                     reservation.status = ReservationStatus.CAPTURED.value
                     reservation.captured_at = now
                 run.payment_state = PaymentStatus.CAPTURED.value
+            elif purchase_already_captured:
+                pass
             elif normalized_status == PaymentStatus.FAILED.value:
                 if run.state in {
                     PurchaseState.PAYMENT_INITIATED,
@@ -1005,6 +1045,14 @@ class CheckoutService:
                 run.terminal_reason = (
                     payment.error_description or "Razorpay reported payment failure."
                 )
+            elif normalized_status == PaymentStatus.UNKNOWN.value:
+                if run.state == PurchaseState.PAYMENT_INITIATED:
+                    run.state = ensure_transition(
+                        run.state,
+                        PurchaseState.PAYMENT_UNKNOWN,
+                        provider_write_started=True,
+                    )
+                run.payment_state = PaymentStatus.UNKNOWN.value
             else:
                 run.payment_state = normalized_status
 
@@ -1036,8 +1084,29 @@ class CheckoutService:
             )
             try:
                 await session.commit()
-            except IntegrityError:
+            except IntegrityError as exc:
                 await session.rollback()
+                async with self._database.session() as verification_session:
+                    winner = await CommerceRepository(
+                        verification_session
+                    ).get_payment_by_provider_id(payment.payment_id)
+                if (
+                    winner is not None
+                    and winner.purchase_run_id == run_id
+                    and winner.razorpay_order_id == order_record_id
+                    and winner.provider_order_id == expected_order_id
+                    and winner.amount_paise == payment.amount_paise
+                    and winner.currency == payment.currency
+                    and winner.status == normalized_status
+                    and winner.captured == payment.captured
+                    and hmac.compare_digest(winner.payload_hash, payment_payload_hash)
+                ):
+                    return
+                raise CheckoutServiceError(
+                    "PAYMENT_PERSISTENCE_FAILED",
+                    "Verified provider payment state could not be persisted",
+                    status_code=500,
+                ) from exc
 
     async def _refresh_order_status(
         self,
@@ -1046,11 +1115,31 @@ class CheckoutService:
     ) -> None:
         async with self._database.session() as session:
             result = await session.execute(
-                select(RazorpayOrder).where(RazorpayOrder.id == order_record_id).with_for_update()
+                select(RazorpayOrder)
+                .where(RazorpayOrder.id == order_record_id)
+                .with_for_update()
             )
             order = result.scalar_one_or_none()
-            if order is None or order.provider_order_id != provider_order.order_id:
-                return
+            if order is None:
+                raise CheckoutServiceError(
+                    "ORDER_STATE_MISSING",
+                    "Local Order state is missing during reconciliation",
+                    status_code=500,
+                )
+            if (
+                order.provider_order_id != provider_order.order_id
+                or order.amount_paise != provider_order.amount_paise
+                or order.currency != provider_order.currency
+                or order.receipt != provider_order.receipt
+                or order.provider_notes != provider_order.notes
+                or not 1 <= len(provider_order.status) <= 40
+                or provider_order.attempts < 0
+            ):
+                raise CheckoutServiceError(
+                    "ORDER_RECONCILIATION_MISMATCH",
+                    "Razorpay Order facts did not match the immutable local operation",
+                    status_code=502,
+                )
             order.provider_status = provider_order.status
             order.attempts = provider_order.attempts
             await session.commit()
@@ -1065,13 +1154,24 @@ class CheckoutService:
         raw_body: bytes,
         payload_facts: dict[str, Any],
     ) -> str:
+        incoming_hash = sha256(raw_body).hexdigest()
         async with self._database.session() as session:
             repository = CommerceRepository(session)
-            existing = await repository.get_webhook_event(provider_event_id)
+            existing = await repository.get_webhook_event(
+                provider_event_id,
+                for_update=True,
+            )
             if existing is not None:
+                if not hmac.compare_digest(existing.payload_hash, incoming_hash):
+                    raise CheckoutServiceError(
+                        "WEBHOOK_EVENT_ID_COLLISION",
+                        "Razorpay event ID was reused with a different signed body",
+                        status_code=409,
+                    )
                 if existing.processing_status == WebhookProcessingStatus.FAILED.value:
                     existing.processing_status = WebhookProcessingStatus.RECEIVED.value
                     existing.processing_error = None
+                    existing.processed_at = None
                     await session.commit()
                     return "received"
                 return "duplicate"
@@ -1086,15 +1186,28 @@ class CheckoutService:
                 purchase_run_id=local_order.purchase_run_id if local_order else None,
                 provider_order_id=order_id,
                 provider_payment_id=payment_id,
-                payload_hash=sha256(raw_body).hexdigest(),
+                payload_hash=incoming_hash,
                 payload_facts=payload_facts,
                 processing_status=WebhookProcessingStatus.RECEIVED.value,
             )
             session.add(event)
             try:
                 await session.commit()
-            except IntegrityError:
+            except IntegrityError as exc:
                 await session.rollback()
+                winner = await repository.get_webhook_event(provider_event_id)
+                if winner is None:
+                    raise CheckoutServiceError(
+                        "WEBHOOK_PERSISTENCE_FAILED",
+                        "Verified webhook metadata could not be persisted",
+                        status_code=500,
+                    ) from exc
+                if not hmac.compare_digest(winner.payload_hash, incoming_hash):
+                    raise CheckoutServiceError(
+                        "WEBHOOK_EVENT_ID_COLLISION",
+                        "Razorpay event ID was reused with a different signed body",
+                        status_code=409,
+                    ) from exc
                 return "duplicate"
             return "received"
 
@@ -1218,8 +1331,14 @@ def _policy_denial_reason(
 
 def _normalize_payment_status(payment: ProviderPayment) -> str:
     normalized = payment.status.upper()
-    if payment.captured or normalized == PaymentStatus.CAPTURED.value:
-        return PaymentStatus.CAPTURED.value
+    if normalized == PaymentStatus.CAPTURED.value:
+        return (
+            PaymentStatus.CAPTURED.value
+            if payment.captured
+            else PaymentStatus.UNKNOWN.value
+        )
+    if payment.captured and normalized != PaymentStatus.REFUNDED.value:
+        return PaymentStatus.UNKNOWN.value
     if normalized in {status.value for status in PaymentStatus}:
         return normalized
     return PaymentStatus.UNKNOWN.value
@@ -1258,7 +1377,12 @@ def _status_response(
         and reservation_active
     ):
         actions.append("OPEN_CHECKOUT")
-    elif run.state in {PurchaseState.PAYMENT_INITIATED, PurchaseState.PAYMENT_UNKNOWN}:
+    elif (
+        order is not None
+        and order.provider_order_id is not None
+        and order.operation_state == ProviderOrderOperationState.CREATED.value
+        and run.state in {PurchaseState.PAYMENT_INITIATED, PurchaseState.PAYMENT_UNKNOWN}
+    ):
         actions.append("RECONCILE")
 
     if run.state == PurchaseState.CAPTURED:
@@ -1266,7 +1390,15 @@ def _status_response(
     elif run.state == PurchaseState.PAYMENT_FAILED:
         message = "Razorpay reported failure. No fulfilment was recorded."
     elif state == PurchaseState.PAYMENT_UNKNOWN.value:
-        message = "Provider status is uncertain. Do not start another charge; reconcile this run."
+        if order is not None and order.provider_order_id is not None:
+            message = (
+                "Provider status is uncertain. Do not start another charge; reconcile this run."
+            )
+        else:
+            message = (
+                "Order creation is uncertain and has no provider ID. Do not create another Order; "
+                "manual reconciliation is required."
+            )
     elif "OPEN_CHECKOUT" in actions:
         message = "The genuine Razorpay Test Mode Order is ready for buyer authentication."
     elif order is None:
@@ -1310,6 +1442,11 @@ def _parse_webhook(raw_body: bytes) -> tuple[str, str | None, str | None, dict[s
         raise CheckoutServiceError(
             "INVALID_WEBHOOK_BODY", "Webhook event shape is invalid", status_code=400
         )
+    if event_type != event_type.strip() or not 1 <= len(event_type) <= 120:
+        raise CheckoutServiceError(
+            "INVALID_WEBHOOK_BODY", "Webhook event type is invalid", status_code=400
+        )
+
     payment_wrapper = provider_payload.get("payment")
     order_wrapper = provider_payload.get("order")
     payment_entity = payment_wrapper.get("entity") if isinstance(payment_wrapper, dict) else None
@@ -1324,6 +1461,17 @@ def _parse_webhook(raw_body: bytes) -> tuple[str, str | None, str | None, dict[s
         order_id = payment_entity["order_id"]
     elif isinstance(order_entity, dict) and isinstance(order_entity.get("id"), str):
         order_id = order_entity["id"]
+
+    for identifier in (payment_id, order_id):
+        if identifier is not None and (
+            identifier != identifier.strip() or not 1 <= len(identifier) <= 64
+        ):
+            raise CheckoutServiceError(
+                "INVALID_WEBHOOK_BODY",
+                "Webhook provider identifier is invalid",
+                status_code=400,
+            )
+
     facts: dict[str, Any] = {"event": event_type}
     if isinstance(payment_entity, dict):
         for field in ("id", "order_id", "amount", "currency", "status", "captured", "method"):

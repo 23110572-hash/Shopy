@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import Connection, create_engine, text
 
-from backend.app.config import get_settings
+from app.config import get_settings
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "verified_tech_products.csv"
 EXPECTED_CATEGORIES = {
