@@ -48,13 +48,10 @@ async def chat_with_agent(
                 per_purchase_limit_paise=saved_controls.per_purchase_limit_paise,
                 daily_spend_limit_paise=saved_controls.daily_spend_limit_paise,
                 monthly_spend_limit_paise=saved_controls.monthly_spend_limit_paise,
-                approval_required_above_paise=saved_controls.approval_required_above_paise,
                 category_allowlist=[
                     ProductCategory(value) for value in saved_controls.category_allowlist
                 ],
                 max_recommendations=saved_controls.max_recommendations,
-                max_replans=saved_controls.max_replans,
-                allow_substitutions=saved_controls.allow_substitutions,
                 version=saved_controls.version,
             )
 
@@ -69,12 +66,7 @@ async def chat_with_agent(
             if agent_response.winner is None:
                 return agent_response
             return agent_response.model_copy(
-                update={
-                    "notice": (
-                        "The winner is validated against the live catalogue. Sign in to save a "
-                        "bounded quote and continue to Razorpay Test Mode Checkout."
-                    )
-                }
+                update={"notice": "Sign in to buy this with Razorpay Test Mode."}
             )
 
         if saved_controls is None or agent_response.winner is None:
@@ -95,8 +87,7 @@ async def chat_with_agent(
             return agent_response.model_copy(
                 update={
                     "notice": (
-                        "The selected product changed before its quote was saved. Ask Shopy to "
-                        "compare again; no Razorpay Order or payment was created."
+                        "This product just changed, so nothing was saved. Ask me to compare again."
                     )
                 }
             )
@@ -110,10 +101,9 @@ async def chat_with_agent(
                 "purchase_proposal": proposal,
                 "checkout_available": proposal.checkout_available,
                 "notice": (
-                    "A short-lived database quote is ready. Razorpay has not charged anything; "
-                    "secure Checkout requires your explicit action."
+                    ""
                     if proposal.checkout_available
-                    else "The quote is saved, but Razorpay Test Mode is not fully configured."
+                    else "Online payment is not configured yet."
                 ),
             }
         )

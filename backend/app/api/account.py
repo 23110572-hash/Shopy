@@ -75,11 +75,8 @@ def _controls_response(controls: ShoppingAgentControls) -> AgentControlsResponse
         per_purchase_limit_paise=controls.per_purchase_limit_paise,
         daily_spend_limit_paise=controls.daily_spend_limit_paise,
         monthly_spend_limit_paise=controls.monthly_spend_limit_paise,
-        approval_required_above_paise=controls.approval_required_above_paise,
         category_allowlist=controls.category_allowlist,
         max_recommendations=controls.max_recommendations,
-        max_replans=controls.max_replans,
-        allow_substitutions=controls.allow_substitutions,
         currency="INR",
         version=controls.version,
         updated_at=controls.updated_at,
@@ -294,11 +291,8 @@ async def update_agent_controls(
         controls.per_purchase_limit_paise = payload.per_purchase_limit_paise
         controls.daily_spend_limit_paise = payload.daily_spend_limit_paise
         controls.monthly_spend_limit_paise = payload.monthly_spend_limit_paise
-        controls.approval_required_above_paise = payload.approval_required_above_paise
         controls.category_allowlist = [category.value for category in payload.category_allowlist]
         controls.max_recommendations = payload.max_recommendations
-        controls.max_replans = payload.max_replans
-        controls.allow_substitutions = payload.allow_substitutions
         await session.commit()
         return _controls_response(controls)
 

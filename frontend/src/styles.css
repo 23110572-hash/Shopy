@@ -669,3 +669,5 @@ h1, h2, h3, p { margin-top: 0; }
 
 .order-card .signin-cta { margin-top: 9px; padding: 11px 16px; border: 0; border-radius: 11px; background: var(--violet); color: white; font-size: 13.5px; font-weight: 600; cursor: pointer; }
 .order-card .signin-cta:hover { background: #4a2fd8; }
+
+.control-footnote { display: block; margin-top: 11px; color: #8d8792; font-size: 12.5px; line-height: 1.55; }

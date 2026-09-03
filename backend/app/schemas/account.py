@@ -130,13 +130,8 @@ class AgentControlsUpdate(BaseModel):
     per_purchase_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
     daily_spend_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
     monthly_spend_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
-    approval_required_above_paise: int | None = Field(
-        default=None, gt=0, le=MAX_MONEY_PAISE
-    )
     category_allowlist: list[ProductCategory] = Field(default_factory=list, max_length=5)
     max_recommendations: int = Field(default=4, ge=1, le=8)
-    max_replans: int = Field(default=3, ge=0, le=10)
-    allow_substitutions: bool = True
 
     @field_validator("category_allowlist")
     @classmethod
@@ -148,13 +143,10 @@ class AgentControlsUpdate(BaseModel):
         per_purchase = self.per_purchase_limit_paise
         daily = self.daily_spend_limit_paise
         monthly = self.monthly_spend_limit_paise
-        approval = self.approval_required_above_paise
         if per_purchase is not None and daily is not None and daily < per_purchase:
             raise ValueError("Daily limit cannot be below the per-purchase limit")
         if daily is not None and monthly is not None and monthly < daily:
             raise ValueError("Monthly limit cannot be below the daily limit")
-        if per_purchase is not None and approval is not None and approval > per_purchase:
-            raise ValueError("Approval threshold cannot exceed the per-purchase limit")
         return self
 
 
@@ -165,8 +157,8 @@ class AgentControlsResponse(AgentControlsUpdate):
     updated_at: datetime
     purchase_authority: Literal["explicit_checkout_only"] = "explicit_checkout_only"
     purchase_authority_notice: str = (
-        "Saved controls bound product selection and spend, but every Standard Checkout still "
-        "requires an explicit signed-in buyer action and Razorpay authentication."
+        "These limits cap what the agent can recommend and buy, but it can never pay by "
+        "itself. You confirm every payment in Razorpay."
     )
 
 

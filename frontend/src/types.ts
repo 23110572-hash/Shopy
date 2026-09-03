@@ -166,7 +166,6 @@ export interface AgentChatResponse {
   reply: string
   intent_source: AgentIntentSource
   decision_source?: AgentDecisionSource | null
-  parser_notice: string
   intent: ShoppingIntent
   recommendations: AgentRecommendation[]
   winner?: AgentRecommendation | null
@@ -215,11 +214,8 @@ export interface AgentControlsUpdate {
   per_purchase_limit_paise: number | null
   daily_spend_limit_paise: number | null
   monthly_spend_limit_paise: number | null
-  approval_required_above_paise: number | null
   category_allowlist: ProductCategory[]
   max_recommendations: number
-  max_replans: number
-  allow_substitutions: boolean
 }
 
 export interface AgentControls extends AgentControlsUpdate {
@@ -227,7 +223,7 @@ export interface AgentControls extends AgentControlsUpdate {
   currency: 'INR'
   version: number
   updated_at: string
-  purchase_authority: 'not_active'
+  purchase_authority: 'explicit_checkout_only'
   purchase_authority_notice: string
 }
 

@@ -61,11 +61,8 @@ class AgentRuntimeControls(BaseModel):
     per_purchase_limit_paise: int | None
     daily_spend_limit_paise: int | None
     monthly_spend_limit_paise: int | None
-    approval_required_above_paise: int | None
     category_allowlist: list[ProductCategory]
     max_recommendations: int = Field(ge=1, le=8)
-    max_replans: int = Field(ge=0, le=10)
-    allow_substitutions: bool
     version: int = Field(ge=1)
 
 
@@ -149,7 +146,6 @@ class AgentChatResponse(BaseModel):
     reply: str
     intent_source: AgentIntentSource
     decision_source: AgentDecisionSource | None = None
-    parser_notice: str
     intent: ShoppingIntent
     recommendations: list[AgentRecommendation]
     winner: AgentRecommendation | None = None
@@ -160,7 +156,5 @@ class AgentChatResponse(BaseModel):
     account_controls_applied: bool = False
     catalogue_backed: Literal[True] = True
     checkout_available: bool = False
-    notice: str = (
-        "Selections come from active, in-stock Neon catalogue rows. "
-        "No payment is recorded until Razorpay confirms it."
-    )
+    # Short, actionable note only. Empty when there is nothing useful to say.
+    notice: str = ""

@@ -74,7 +74,6 @@ async def persist_purchase_proposal(
         request_hash=request_hash,
         command=request.message,
         state=PurchaseState.RECEIVED,
-        max_replans=controls.max_replans,
         graph_state={},
     )
     session.add(run)

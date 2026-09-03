@@ -341,10 +341,6 @@ class ShoppingGraph:
         decision = state.get("decision")
         controls_applied = state.get("controls_applied", False)
 
-        parser_notice = _parser_notice(intent_source, decision)
-        if controls_applied:
-            parser_notice += " Saved account limits were enforced before comparison."
-
         winner: AgentRecommendation | None = None
         upsell: AgentRecommendation | None = None
         cross_sell: AgentRecommendation | None = None
@@ -368,15 +364,14 @@ class ShoppingGraph:
         blocked_reason = state.get("blocked_reason")
         if blocked_reason:
             reply = blocked_reason
-        elif winner is not None:
-            reply = (
-                f"I compared {len(primary)} real in-stock products and selected "
-                f"{winner.product.title}. {decision.winner_reason if decision else ''}"
-            ).strip()
+        elif winner is not None and decision is not None:
+            # Lead with the recommendation itself. The product cards below already
+            # carry the title and price, so the reply stays a plain explanation.
+            reply = decision.winner_reason
         else:
             reply = (
-                "I could not find an active, in-stock catalogue product that satisfies those "
-                "filters and your saved controls. Try another category, feature, or price ceiling."
+                "I could not find an in-stock product matching that. Try a different "
+                "category, feature, or budget."
             )
 
         return ShoppingGraphState(
@@ -384,7 +379,6 @@ class ShoppingGraph:
                 reply=reply,
                 intent_source=intent_source,
                 decision_source=decision.decision_source if decision else None,
-                parser_notice=parser_notice,
                 intent=intent,
                 recommendations=recommendations,
                 winner=winner,
@@ -392,12 +386,8 @@ class ShoppingGraph:
                 upsell=upsell,
                 cross_sell=cross_sell,
                 account_controls_applied=controls_applied,
-                notice=(
-                    "The winner is catalogue-backed and deterministically validated. Sign in to "
-                    "create a short-lived quote; no Razorpay Order was created by this search."
-                    if winner is not None
-                    else "No purchase or payment was attempted."
-                ),
+                # The API layer fills in an actionable note when there is one.
+                notice="",
             )
         )
 
@@ -482,17 +472,13 @@ def _fallback_decision(
         selected_product_id=winner.product.id,
         ranked_product_ids=[item.product.id for item in primary],
         winner_reason=(
-            "Highest transparent fallback score after hard catalogue and account-policy filters."
+            f"{winner.product.title} is the closest in-stock match for what you asked for."
         ),
-        tradeoffs=["The provider comparison was unavailable, so no model claim was invented."],
+        tradeoffs=[],
         upsell_product_id=upsell.product.id if upsell else None,
-        upsell_reason="Next eligible higher-fit alternative from the same bounded shortlist."
-        if upsell
-        else None,
+        upsell_reason="A higher-end option worth a look." if upsell else None,
         cross_sell_product_id=cross_sell.product.id if cross_sell else None,
-        cross_sell_reason="Top eligible complementary catalogue result."
-        if cross_sell
-        else None,
+        cross_sell_reason="Pairs well with your pick." if cross_sell else None,
         decision_source=source,
     )
 
@@ -511,30 +497,6 @@ def _with_decision_reason(
 ) -> AgentRecommendation:
     reasons = [reason, *recommendation.reasons]
     return recommendation.model_copy(update={"reasons": reasons[:6]})
-
-
-def _parser_notice(
-    intent_source: AgentIntentSource,
-    decision: AgentProductDecision | None,
-) -> str:
-    intent_notice = {
-        "deterministic": "Intent used transparent local parsing.",
-        "openrouter": "The configured OpenRouter model parsed the shopping intent.",
-        "deterministic_fallback": "Intent parsing fell back safely to transparent local rules.",
-    }[intent_source]
-    if decision is None:
-        return f"{intent_notice} No eligible candidate reached product comparison."
-    decision_notice = {
-        "openrouter": (
-            "The configured OpenRouter model compared real candidate specifications and selected "
-            "one ID; code validated that ID against the supplied set."
-        ),
-        "deterministic": "No model was configured, so final selection used transparent scoring.",
-        "deterministic_fallback": (
-            "Model comparison failed safely, so final selection used transparent scoring."
-        ),
-    }[decision.decision_source]
-    return f"{intent_notice} {decision_notice}"
 
 
 def _parse_deterministic_intent(request: AgentChatRequest) -> ShoppingIntent:
