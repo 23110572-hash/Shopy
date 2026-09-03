@@ -666,3 +666,6 @@ h1, h2, h3, p { margin-top: 0; }
   .address-card { grid-template-columns: 20px minmax(0, 1fr); }
   .address-card-actions { grid-column: 2; grid-auto-flow: column; justify-content: start; }
 }
+
+.order-card .signin-cta { margin-top: 9px; padding: 11px 16px; border: 0; border-radius: 11px; background: var(--violet); color: white; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.order-card .signin-cta:hover { background: #4a2fd8; }

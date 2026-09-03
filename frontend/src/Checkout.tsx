@@ -221,7 +221,8 @@ interface CheckoutProps {
 
 function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
   const [loading, setLoading] = useState(true)
-  const [authenticated, setAuthenticated] = useState(false)
+  // Only set when the server actually rejects the session, never for other errors.
+  const [sessionExpired, setSessionExpired] = useState(false)
   const [addresses, setAddresses] = useState<DeliveryAddress[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -245,7 +246,6 @@ function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
     const controller = new AbortController()
     fetchAddresses(controller.signal)
       .then((result) => {
-        setAuthenticated(true)
         setAddresses(result.items)
         const preferred = result.items.find((item) => item.is_default) ?? result.items[0]
         setSelectedId(preferred?.id ?? null)
@@ -254,9 +254,12 @@ function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
       .catch((requestError: unknown) => {
         if (requestError instanceof DOMException && requestError.name === 'AbortError') return
         if (requestError instanceof ApiError && requestError.status === 401) {
-          setAuthenticated(false)
+          setSessionExpired(true)
           return
         }
+        // Any other failure is a real error; keep the form usable and surface it
+        // instead of wrongly telling a signed-in shopper to sign in.
+        setFormOpen(true)
         setError(
           requestError instanceof Error
             ? requestError.message
@@ -340,6 +343,10 @@ function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
         throw paymentError
       }
     } catch (orderError) {
+      if (orderError instanceof ApiError && orderError.status === 401) {
+        setSessionExpired(true)
+        return
+      }
       setError(
         orderError instanceof Error ? orderError.message : 'The order could not be placed.',
       )
@@ -374,14 +381,14 @@ function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
     )
   }
 
-  if (!authenticated) {
+  if (sessionExpired) {
     return (
       <section className="checkout-panel checkout-gate">
-        <span className="section-label">SIGN IN REQUIRED</span>
-        <h2>Sign in to place this order</h2>
+        <span className="section-label">SESSION EXPIRED</span>
+        <h2>Please sign in again</h2>
         <p>
-          Orders are tied to your Shopy account so you can track them and reuse saved delivery
-          addresses.
+          Your session is no longer valid, so this order was not placed. Sign in again and your
+          cart will still be here.
         </p>
         <div className="checkout-gate-actions">
           <button type="button" className="primary-action" onClick={onSignIn}>

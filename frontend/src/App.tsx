@@ -4,6 +4,7 @@ import logoPng from './assets/logo.png'
 import {
   confirmCheckoutPayment,
   createCheckoutOrder,
+  fetchAccountProfile,
   fetchCatalog,
   fetchHealth,
   reconcileCheckoutPayment,
@@ -18,6 +19,7 @@ import {
 import AccountCenter from './AccountCenter'
 import Checkout from './Checkout'
 import type {
+  AccountProfile,
   AgentChatResponse,
   AppPage,
   CartItem,
@@ -267,9 +269,20 @@ interface CartProps {
   onBrowse: () => void
   onClear: () => void
   onSignIn: () => void
+  signedIn: boolean
+  sessionChecked: boolean
 }
 
-function CartView({ cart, onQuantity, onRemove, onBrowse, onClear, onSignIn }: CartProps) {
+function CartView({
+  cart,
+  onQuantity,
+  onRemove,
+  onBrowse,
+  onClear,
+  onSignIn,
+  signedIn,
+  sessionChecked,
+}: CartProps) {
   const total = cart.reduce((sum, item) => sum + item.product.offer_price_paise * item.quantity, 0)
   const count = cart.reduce((sum, item) => sum + item.quantity, 0)
   const [checkingOut, setCheckingOut] = useState(false)
@@ -305,7 +318,20 @@ function CartView({ cart, onQuantity, onRemove, onBrowse, onClear, onSignIn }: C
               </article>
             ))}
           </div>
-          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Free</strong></div><div className="order-total"><span>Order total</span><strong>{formatPrice(total)}</strong></div><button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
+          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Free</strong></div><div className="order-total"><span>Order total</span><strong>{formatPrice(total)}</strong></div>
+            {signedIn ? (
+              <>
+                <button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button>
+                <p>Choose cash on delivery or pay online with Razorpay Test Mode on the next step.</p>
+              </>
+            ) : (
+              <>
+                <button type="button" disabled title="Sign in to place an order">Sign in to checkout</button>
+                <p>{sessionChecked ? 'Orders are saved to your Shopy account, so checkout needs you signed in.' : 'Checking your session…'}</p>
+                <button className="signin-cta" type="button" onClick={onSignIn}>Sign in or create account →</button>
+              </>
+            )}
+            <button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
         </section>
       )}
     </main>
@@ -534,10 +560,24 @@ function App() {
   const [cart, setCart] = useState<CartItem[]>(loadCart)
   const [agentOpen, setAgentOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
+  const [profile, setProfile] = useState<AccountProfile | null>(null)
+  const [sessionChecked, setSessionChecked] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
     fetchHealth(controller.signal).then(setHealth).catch(() => setHealth(null))
+    return () => controller.abort()
+  }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchAccountProfile(controller.signal)
+      .then(setProfile)
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setProfile(null)
+      })
+      .finally(() => setSessionChecked(true))
     return () => controller.abort()
   }, [])
 
@@ -593,8 +633,8 @@ function App() {
     <div className="app-shell">
       <Navigation page={page} cartCount={cartCount} online={health?.database === 'ready'} onNavigate={navigate} />
       {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => setAgentOpen(true)} /> : null}
-      {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} /> : null}
-      {page === 'profile' ? <AccountCenter health={health} /> : null}
+      {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} signedIn={profile !== null} sessionChecked={sessionChecked} /> : null}
+      {page === 'profile' ? <AccountCenter health={health} onSession={setProfile} /> : null}
       <footer className="site-footer">
         <button type="button" onClick={() => navigate('home')} aria-label="Shopy home">
           <img src={logoPng} alt="Shopy" className="footer-logo" />

@@ -38,6 +38,8 @@ type SessionState = 'loading' | 'guest' | 'authenticated'
 
 interface AccountCenterProps {
   health: HealthStatus | null
+  /** Lets the rest of the app react to sign-in and sign-out. */
+  onSession?: (profile: AccountProfile | null) => void
 }
 
 function formatDate(value: string | null): string {
@@ -175,7 +177,7 @@ function HistoryEmpty({ title, reason, kind }: { title: string; reason: string; 
   )
 }
 
-function AccountCenter({ health }: AccountCenterProps) {
+function AccountCenter({ health, onSession }: AccountCenterProps) {
   const [sessionState, setSessionState] = useState<SessionState>('loading')
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [activeTab, setActiveTab] = useState<AccountTab>('auth')
@@ -195,12 +197,14 @@ function AccountCenter({ health }: AccountCenterProps) {
         setProfile(account)
         setDisplayName(account.display_name)
         setSessionState('authenticated')
+        onSession?.(account)
         setActiveTab((current) => current === 'auth' ? 'overview' : current)
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
         // Do not show 'Failed to fetch' error banner to the user just because they are not logged in or API is offline
         setSessionState('guest')
+        onSession?.(null)
         setActiveTab('auth')
       })
     return () => controller.abort()
@@ -272,6 +276,7 @@ function AccountCenter({ health }: AccountCenterProps) {
       setOrders(null)
       setTransactions(null)
       setSessionState('guest')
+      onSession?.(null)
       setActiveTab('auth')
     } catch (error) {
       setDataError(error instanceof Error ? error.message : 'Could not sign out.')
@@ -325,6 +330,7 @@ function AccountCenter({ health }: AccountCenterProps) {
               setProfile(account)
               setDisplayName(account.display_name)
               setSessionState('authenticated')
+              onSession?.(account)
               setActiveTab('overview')
             }} />
           ) : null}
