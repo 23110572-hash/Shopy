@@ -6,10 +6,13 @@ import type {
   AgentControlsUpdate,
   AuthResponse,
   CatalogPage,
+  CheckoutCallback,
+  CheckoutSession,
   HealthStatus,
   LoginRequest,
   OrderHistoryResponse,
   ProductCategory,
+  PurchaseRunStatus,
   SignupRequest,
   TransactionHistoryResponse,
 } from './types'
@@ -146,4 +149,47 @@ export function fetchTransactionHistory(
   signal?: AbortSignal,
 ): Promise<TransactionHistoryResponse> {
   return requestJson<TransactionHistoryResponse>('/api/account/transactions', { signal })
+}
+
+/**
+ * Derive a stable Idempotency-Key from the proposal so that retrying a failed
+ * or interrupted attempt reuses the same Razorpay Order instead of creating a
+ * duplicate one. Matches the backend charset (letters, digits, - _ . :) and the
+ * required 16-128 character length.
+ */
+function proposalIdempotencyKey(proposalId: string): string {
+  return `checkout:${proposalId}`
+}
+
+export function createCheckoutOrder(proposalId: string): Promise<CheckoutSession> {
+  return requestJson<CheckoutSession>('/api/checkout/orders', {
+    method: 'POST',
+    headers: { ...protectedHeaders(), 'Idempotency-Key': proposalIdempotencyKey(proposalId) },
+    body: JSON.stringify({ proposal_id: proposalId }),
+  })
+}
+
+export function fetchCheckoutStatus(
+  runId: string,
+  signal?: AbortSignal,
+): Promise<PurchaseRunStatus> {
+  return requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}`, { signal })
+}
+
+export function confirmCheckoutPayment(
+  runId: string,
+  callback: CheckoutCallback,
+): Promise<PurchaseRunStatus> {
+  return requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}/confirm`, {
+    method: 'POST',
+    headers: protectedHeaders(),
+    body: JSON.stringify(callback),
+  })
+}
+
+export function reconcileCheckoutPayment(runId: string): Promise<PurchaseRunStatus> {
+  return requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}/reconcile`, {
+    method: 'POST',
+    headers: protectedHeaders(),
+  })
 }

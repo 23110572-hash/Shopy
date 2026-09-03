@@ -138,6 +138,8 @@ class RazorpayStandardCheckoutGateway:
             raise ValueError("Razorpay order amount must be at least 100 paise")
         if len(receipt) > 40:
             raise ValueError("Razorpay receipt must not exceed 40 characters")
+        # The Orders API rejects any capture field ("extra_field_sent"); capture
+        # behaviour is controlled by the Razorpay account's payment-capture setting.
         payload = await self._request_json(
             "POST",
             "/v1/orders",
@@ -146,7 +148,6 @@ class RazorpayStandardCheckoutGateway:
                 "currency": "INR",
                 "receipt": receipt,
                 "notes": notes,
-                "capture": "automatic",
             },
             provider_write=True,
         )

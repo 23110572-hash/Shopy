@@ -77,16 +77,106 @@ export interface AgentChatRequest {
   limit?: number
 }
 
+export type AgentDecisionSource = AgentIntentSource
+
+export type ProposalBlocker = 'AUTH_REQUIRED' | 'PAYMENT_NOT_CONFIGURED' | 'STALE'
+
+export interface ProposalHardLimits {
+  requested_or_effective_ceiling_paise: number | null
+  recommendation_ceiling_paise: number | null
+  per_purchase_limit_paise: number | null
+  daily_spend_limit_paise: number | null
+  monthly_spend_limit_paise: number | null
+}
+
+export interface AgentProductDecision {
+  selected_product_id: string
+  ranked_product_ids: string[]
+  winner_reason: string
+  tradeoffs: string[]
+  upsell_product_id: string | null
+  upsell_reason: string | null
+  cross_sell_product_id: string | null
+  cross_sell_reason: string | null
+  decision_source: AgentDecisionSource
+}
+
+export interface PurchaseProposal {
+  proposal_id: string
+  run_id: string
+  product: CatalogProduct
+  quantity: 1
+  amount_paise: number
+  currency: 'INR'
+  selection_source: AgentDecisionSource
+  selection_reason: string
+  product_version: number
+  controls_version: number
+  expires_at: string
+  checkout_available: boolean
+  blocker: ProposalBlocker | null
+  hard_limits: ProposalHardLimits
+}
+
+export type CheckoutAction = 'CREATE_ORDER' | 'OPEN_CHECKOUT' | 'RECONCILE'
+
+export interface CheckoutSession {
+  run_id: string
+  proposal_id: string
+  key_id: string
+  order_id: string
+  amount_paise: number
+  currency: 'INR'
+  merchant_name: string
+  description: string
+  prefill_name: string
+  prefill_email: string
+  state: 'ORDER_CREATED'
+  expires_at: string
+  test_mode: true
+  allowed_actions: CheckoutAction[]
+}
+
+export interface CheckoutCallback {
+  razorpay_payment_id: string
+  razorpay_order_id: string
+  razorpay_signature: string
+}
+
+export interface PurchaseRunStatus {
+  run_id: string
+  proposal_id: string
+  state: string
+  payment_state: string | null
+  order_id: string | null
+  payment_id: string | null
+  provider_order_status: string | null
+  amount_paise: number
+  currency: 'INR'
+  terminal_reason: string | null
+  allowed_actions: CheckoutAction[]
+  quote_expires_at: string
+  updated_at: string
+  retry_after_ms: number | null
+  message: string
+}
+
 export interface AgentChatResponse {
   agent_name: 'Shopy Agent'
   reply: string
   intent_source: AgentIntentSource
+  decision_source?: AgentDecisionSource | null
   parser_notice: string
   intent: ShoppingIntent
   recommendations: AgentRecommendation[]
+  winner?: AgentRecommendation | null
+  decision?: AgentProductDecision | null
+  upsell?: AgentRecommendation | null
+  cross_sell?: AgentRecommendation | null
+  purchase_proposal?: PurchaseProposal | null
   account_controls_applied: boolean
   catalogue_backed: true
-  checkout_available: false
+  checkout_available: boolean
   notice: string
 }
 

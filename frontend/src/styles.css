@@ -563,3 +563,21 @@ h1, h2, h3, p { margin-top: 0; }
   .security-list article { grid-template-columns: 42px minmax(0, 1fr); }
   .security-list article > span { grid-column: 2; justify-self: start; }
 }
+
+/* Agent purchase proposal / Razorpay Test Mode checkout */
+.proposal-checkout { display: grid; gap: 8px; margin-top: 9px; padding: 11px; border: 1px solid rgba(91, 61, 245, 0.28); border-radius: 14px; background: linear-gradient(150deg, #f6f3ff, #eee9ff); }
+.proposal-checkout.captured { border-color: rgba(24, 138, 86, 0.34); background: linear-gradient(150deg, #eefaf2, #dff4e8); }
+.proposal-head { display: grid; gap: 3px; }
+.proposal-head span { color: var(--violet); font-family: 'DM Mono', monospace; font-size: 9px; letter-spacing: .06em; text-transform: uppercase; }
+.proposal-head strong { overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
+.proposal-head b { font-size: 17px; }
+.proposal-checkout.captured strong { font-size: 13px; }
+.proposal-checkout.captured p { margin: 0; color: #1c6b45; font-size: 12px; line-height: 1.5; }
+.proposal-checkout.captured small { color: #4c7a63; font-family: 'DM Mono', monospace; font-size: 10px; overflow-wrap: anywhere; }
+.proposal-pay { padding: 10px 14px; border: 0; border-radius: 10px; background: var(--violet); color: white; font-size: 13px; font-weight: 600; cursor: pointer; transition: 160ms ease; }
+.proposal-pay:hover:not(:disabled) { background: #4a2fd8; }
+.proposal-pay:disabled { opacity: .62; cursor: progress; }
+.proposal-recheck { justify-self: start; padding: 6px 12px; border: 1px solid var(--line); border-radius: 9px; background: white; font-size: 12px; cursor: pointer; }
+.proposal-recheck:disabled { opacity: .6; cursor: progress; }
+.proposal-note { margin: 0; color: #6d6580; font-size: 11px; line-height: 1.5; }
+.proposal-error { margin: 0; color: #a4243b; font-size: 11.5px; line-height: 1.5; }

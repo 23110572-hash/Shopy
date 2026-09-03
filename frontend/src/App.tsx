@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import logoPng from './assets/logo.png'
-import { fetchCatalog, fetchHealth, sendAgentChat } from './api'
+import {
+  confirmCheckoutPayment,
+  createCheckoutOrder,
+  fetchCatalog,
+  fetchHealth,
+  reconcileCheckoutPayment,
+  sendAgentChat,
+} from './api'
+import { CheckoutDismissedError, loadRazorpayCheckout, openRazorpayCheckout } from './razorpay'
 import AccountCenter from './AccountCenter'
 import type {
   AgentChatResponse,
@@ -11,6 +19,8 @@ import type {
   CatalogProduct,
   HealthStatus,
   ProductCategory,
+  PurchaseProposal,
+  PurchaseRunStatus,
 } from './types'
 
 const CART_STORAGE_KEY = 'shopy-cart-v1'
@@ -285,6 +295,156 @@ interface ChatMessage {
   response?: AgentChatResponse
 }
 
+type CheckoutPhase = 'idle' | 'creating' | 'opening' | 'confirming' | 'settled'
+
+const blockerCopy: Record<string, string> = {
+  AUTH_REQUIRED: 'Sign in from the Profile tab to turn this quote into a Razorpay Test order.',
+  PAYMENT_NOT_CONFIGURED: 'Razorpay Test Mode is not configured on the server yet.',
+  STALE: 'This product changed after the quote was saved. Ask Shopy to compare again.',
+}
+
+function remainingLabel(expiresAt: string, now: number): string | null {
+  const remaining = new Date(expiresAt).getTime() - now
+  if (!Number.isFinite(remaining) || remaining <= 0) return null
+  const totalSeconds = Math.floor(remaining / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+function ProposalCheckout({ proposal }: { proposal: PurchaseProposal }) {
+  const [phase, setPhase] = useState<CheckoutPhase>('idle')
+  const [status, setStatus] = useState<PurchaseRunStatus | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+
+  const settled = status?.state === 'CAPTURED' || status?.state === 'PAYMENT_FAILED'
+
+  useEffect(() => {
+    if (settled) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [settled])
+
+  const countdown = remainingLabel(proposal.expires_at, now)
+  const expired = countdown === null
+  const busy = phase === 'creating' || phase === 'opening' || phase === 'confirming'
+  const captured = status?.state === 'CAPTURED'
+  const failed = status?.state === 'PAYMENT_FAILED'
+  const pending = status !== null && !captured && !failed
+
+  async function pay() {
+    setError(null)
+    setPhase('creating')
+    let runId: string | null = null
+    try {
+      const [session] = await Promise.all([
+        createCheckoutOrder(proposal.proposal_id),
+        loadRazorpayCheckout(),
+      ])
+      runId = session.run_id
+      setPhase('opening')
+      const callback = await openRazorpayCheckout(session)
+      setPhase('confirming')
+      setStatus(await confirmCheckoutPayment(session.run_id, callback))
+      setPhase('settled')
+    } catch (flowError) {
+      // A dismissed modal is not a failure. Ask the server for the real state.
+      if (flowError instanceof CheckoutDismissedError && runId !== null) {
+        try {
+          setPhase('confirming')
+          setStatus(await reconcileCheckoutPayment(runId))
+          setPhase('settled')
+          return
+        } catch {
+          setError('Checkout was closed. Use "Check payment status" to confirm.')
+          setPhase('idle')
+          return
+        }
+      }
+      setError(
+        flowError instanceof Error ? flowError.message : 'Checkout could not be completed.',
+      )
+      setPhase('idle')
+    }
+  }
+
+  async function recheck() {
+    const runId = status?.run_id
+    if (!runId) return
+    setError(null)
+    setPhase('confirming')
+    try {
+      setStatus(await reconcileCheckoutPayment(runId))
+    } catch (statusError) {
+      setError(
+        statusError instanceof Error ? statusError.message : 'Payment status is unavailable.',
+      )
+    } finally {
+      setPhase('settled')
+    }
+  }
+
+  if (captured) {
+    return (
+      <div className="proposal-checkout captured">
+        <strong>Payment captured · Test Mode</strong>
+        <p>{status?.message ?? 'Razorpay confirmed this test payment.'}</p>
+        <small>Order {status?.order_id ?? '—'} · Payment {status?.payment_id ?? '—'}</small>
+      </div>
+    )
+  }
+
+  const blocked = !proposal.checkout_available
+  const blockedReason = proposal.blocker ? blockerCopy[proposal.blocker] : null
+
+  return (
+    <div className="proposal-checkout">
+      <div className="proposal-head">
+        <span>BEST MATCH · BOUNDED QUOTE</span>
+        <strong>{proposal.product.title}</strong>
+        <b>{formatPrice(proposal.amount_paise)}</b>
+      </div>
+      {blocked ? (
+        <p className="proposal-note">
+          {blockedReason ?? 'Checkout is not available for this quote yet.'}
+        </p>
+      ) : expired ? (
+        <p className="proposal-note">This quote expired. Ask Shopy to compare again.</p>
+      ) : (
+        <>
+          <button className="proposal-pay" type="button" onClick={pay} disabled={busy}>
+            {phase === 'creating'
+              ? 'Creating Razorpay order…'
+              : phase === 'opening'
+                ? 'Waiting for Razorpay…'
+                : phase === 'confirming'
+                  ? 'Verifying payment…'
+                  : `Pay ${formatPrice(proposal.amount_paise)} in Test Mode`}
+          </button>
+          <small className="proposal-note">
+            Razorpay Test Mode · no real money moves · quote expires in {countdown}
+          </small>
+        </>
+      )}
+      {failed ? (
+        <p className="proposal-error">
+          {status?.terminal_reason ?? 'Razorpay reported that the payment failed.'}
+        </p>
+      ) : null}
+      {pending ? (
+        <>
+          <p className="proposal-note">{status?.message}</p>
+          <button className="proposal-recheck" type="button" onClick={recheck} disabled={busy}>
+            Check payment status
+          </button>
+        </>
+      ) : null}
+      {error ? <p className="proposal-error">{error}</p> : null}
+    </div>
+  )
+}
+
 function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value: boolean) => void; onAdd: (product: CatalogProduct) => void }) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ id: 'welcome', role: 'agent', text: 'Hi — I search the live Shopy catalogue. Tell me a category, feature, or budget.' }])
   const [draft, setDraft] = useState('')
@@ -323,7 +483,7 @@ function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value:
             {messages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
                 <div className="chat-bubble">{message.text}</div>
-                {message.response ? <><small className="parser-note">{message.response.parser_notice}</small><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}><CatalogImage product={recommendation.product} imgClassName="result-image" fallback={categoryGlyphs[recommendation.product.category]} /></div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div><small className="agent-notice">{message.response.notice}</small></> : null}
+                {message.response ? <><small className="parser-note">{message.response.parser_notice}</small><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}><CatalogImage product={recommendation.product} imgClassName="result-image" fallback={categoryGlyphs[recommendation.product.category]} /></div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div>{message.response.purchase_proposal ? <ProposalCheckout proposal={message.response.purchase_proposal} /> : null}<small className="agent-notice">{message.response.notice}</small></> : null}
               </div>
             ))}
             {busy ? <div className="agent-typing" aria-label="Shopy Agent is searching"><span /><span /><span /></div> : null}
@@ -331,7 +491,7 @@ function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value:
             <div ref={endRef} />
           </div>
           <form className="agent-input" onSubmit={submit}><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask for a product…" aria-label="Message Shopy Agent" maxLength={1000} /><button type="submit" disabled={!draft.trim() || busy} aria-label="Send message"><Icon name="send" /></button></form>
-          <footer>Catalogue search only <span>•</span> No payment actions</footer>
+          <footer>Live catalogue search <span>•</span> Razorpay Test Mode only</footer>
         </section>
       ) : null}
       <button className="agent-launcher" type="button" onClick={() => onOpen(!open)} aria-label={open ? 'Close Shopy Agent' : 'Open Shopy Agent'} aria-expanded={open}>{open ? <Icon name="close" /> : <Icon name="sparkles" />}{!open ? <span className="launcher-pulse" /> : null}</button>
