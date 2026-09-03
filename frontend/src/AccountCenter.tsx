@@ -195,6 +195,7 @@ function AccountCenter({ health }: AccountCenterProps) {
         setProfile(account)
         setDisplayName(account.display_name)
         setSessionState('authenticated')
+        setActiveTab((current) => current === 'auth' ? 'overview' : current)
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
