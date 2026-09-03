@@ -290,7 +290,7 @@ function CartView({ cart, onQuantity, onRemove, onBrowse, onClear, onSignIn }: C
 
   return (
     <main className="page interior-page">
-      <section className="page-heading"><span className="section-label">YOUR SAVED PICKS</span><h1>Your cart</h1><p>Saved on this device. Prices and stock are revalidated on the server when you place the order.</p></section>
+      <section className="page-heading"><span className="section-label">YOUR SAVED PICKS</span><h1>Your cart</h1><p>Saved all your favourite items.</p></section>
       {cart.length === 0 ? (
         <section className="empty-cart"><div className="empty-icon"><Icon name="cart" /></div><h2>Your cart is ready for something good.</h2><p>Browse the live catalogue or ask Shopy Agent to narrow down the best match.</p><button className="primary-action" type="button" onClick={onBrowse}>Start shopping →</button></section>
       ) : (
@@ -305,7 +305,7 @@ function CartView({ cart, onQuantity, onRemove, onBrowse, onClear, onSignIn }: C
               </article>
             ))}
           </div>
-          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Free</strong></div><div className="order-total"><span>Order total</span><strong>{formatPrice(total)}</strong></div><button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button><p>Choose cash on delivery or pay online with Razorpay Test Mode on the next step.</p><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
+          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Free</strong></div><div className="order-total"><span>Order total</span><strong>{formatPrice(total)}</strong></div><button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
         </section>
       )}
     </main>
