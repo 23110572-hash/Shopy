@@ -15,6 +15,7 @@ from backend.app.models.commerce import (
     AuditEntry,
     PaymentAttempt,
     PaymentStatus,
+    ProviderOrderOperationState,
     PurchaseQuote,
     PurchaseReservation,
     RazorpayOrder,
@@ -147,10 +148,18 @@ class CommerceRepository:
         )
         return result.scalar_one_or_none()
 
-    async def get_webhook_event(self, provider_event_id: str) -> WebhookEvent | None:
-        result = await self._session.execute(
-            select(WebhookEvent).where(WebhookEvent.provider_event_id == provider_event_id)
+    async def get_webhook_event(
+        self,
+        provider_event_id: str,
+        *,
+        for_update: bool = False,
+    ) -> WebhookEvent | None:
+        statement = select(WebhookEvent).where(
+            WebhookEvent.provider_event_id == provider_event_id
         )
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
     async def active_reserved_quantity(
@@ -219,7 +228,12 @@ class CommerceRepository:
         result = await self._session.execute(
             select(RazorpayOrder)
             .join(PurchaseRun, PurchaseRun.id == RazorpayOrder.purchase_run_id)
-            .where(PurchaseRun.buyer_user_id == buyer_user_id)
+            .where(
+                PurchaseRun.buyer_user_id == buyer_user_id,
+                RazorpayOrder.provider_order_id.is_not(None),
+                RazorpayOrder.operation_state == ProviderOrderOperationState.CREATED.value,
+                RazorpayOrder.provider_status.is_not(None),
+            )
             .order_by(RazorpayOrder.created_at.desc())
             .limit(limit)
         )

@@ -47,10 +47,11 @@ class CheckoutCallbackRequest(BaseModel):
         "razorpay_payment_id",
         "razorpay_order_id",
         "razorpay_signature",
+        mode="before",
     )
     @classmethod
-    def strip_provider_value(cls, value: str) -> str:
-        return value.strip()
+    def strip_provider_value(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 class PurchaseRunStatusResponse(BaseModel):

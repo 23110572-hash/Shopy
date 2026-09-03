@@ -1,5 +1,6 @@
 """Idempotent Standard Checkout orchestration and provider reconciliation."""
 
+import hmac
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,7 +17,6 @@ from backend.app.domain.purchase_state import PurchaseState, ensure_transition
 from backend.app.gateways.razorpay import (
     ProviderOrder,
     ProviderPayment,
-    RazorpayAmbiguousWriteError,
     RazorpayGatewayError,
     RazorpayRejectedError,
     RazorpayStandardCheckoutGateway,
@@ -96,32 +96,33 @@ class CheckoutService:
         if prepared.provider_order_id is not None:
             return self._checkout_session(prepared, buyer)
 
+        expected_notes = {
+            "shopy_run_id": str(prepared.run_id),
+            "shopy_proposal_id": str(prepared.proposal_id),
+        }
         gateway = RazorpayStandardCheckoutGateway(self._settings)
         try:
             provider_order = await gateway.create_order(
                 amount_paise=prepared.amount_paise,
                 receipt=prepared.receipt,
-                notes={
-                    "shopy_run_id": str(prepared.run_id),
-                    "shopy_proposal_id": str(prepared.proposal_id),
-                },
+                notes=expected_notes,
             )
-        except RazorpayAmbiguousWriteError as exc:
-            await self._mark_order_unknown(
-                prepared,
-                "Razorpay Order creation returned an ambiguous result; no retry was issued.",
-            )
-            raise CheckoutServiceError(
-                "ORDER_UNKNOWN",
-                "Order status is unknown. Do not retry payment; reconcile this purchase run.",
-                status_code=409,
-            ) from exc
         except RazorpayRejectedError as exc:
             await self._mark_order_failed(prepared, str(exc))
             raise CheckoutServiceError(
                 "ORDER_REJECTED",
                 "Razorpay rejected the test Order. No payment was initiated.",
                 status_code=502,
+            ) from exc
+        except RazorpayGatewayError as exc:
+            await self._mark_order_unknown(
+                prepared,
+                "Razorpay Order creation returned an ambiguous result; no retry was issued.",
+            )
+            raise CheckoutServiceError(
+                "ORDER_UNKNOWN",
+                "Order status is unknown. Do not retry payment; manual reconciliation is required.",
+                status_code=409,
             ) from exc
         finally:
             await gateway.aclose()
@@ -130,6 +131,10 @@ class CheckoutService:
             provider_order.amount_paise != prepared.amount_paise
             or provider_order.currency != prepared.currency
             or provider_order.receipt != prepared.receipt
+            or provider_order.notes != expected_notes
+            or not 1 <= len(provider_order.order_id) <= 64
+            or not 1 <= len(provider_order.status) <= 40
+            or provider_order.attempts < 0
         ):
             await self._mark_order_unknown(
                 prepared,
@@ -296,6 +301,12 @@ class CheckoutService:
             raise CheckoutServiceError(
                 "WEBHOOK_NOT_CONFIGURED",
                 "Razorpay webhook secret is not configured",
+                status_code=503,
+            )
+        if not self._settings.razorpay_api_configured:
+            raise CheckoutServiceError(
+                "RAZORPAY_NOT_CONFIGURED",
+                "Razorpay provider reconciliation is not configured",
                 status_code=503,
             )
         gateway = RazorpayStandardCheckoutGateway(self._settings)

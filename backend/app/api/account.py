@@ -1,6 +1,10 @@
 """Authentication and database-backed Shopy account endpoints."""
 
+import hmac
+import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
+from hashlib import sha256
 from typing import Annotated
 from uuid import UUID
 
@@ -12,10 +16,10 @@ from backend.app.config import Settings
 from backend.app.database import Database
 from backend.app.dependencies import get_database, get_runtime_settings
 from backend.app.models.account import AuthSession, ShoppingAgentControls
-from backend.app.models.commerce import ProviderOrderOperationState
+from backend.app.models.commerce import AuditEntry, ProviderOrderOperationState
 from backend.app.models.user import User, UserRole
 from backend.app.repositories.accounts import AccountRepository
-from backend.app.repositories.commerce import CommerceRepository
+from backend.app.repositories.commerce import CommerceRepository, ZERO_HASH
 from backend.app.schemas.account import (
     AccountProfile,
     AgentControlsResponse,
@@ -80,6 +84,58 @@ def _controls_response(controls: ShoppingAgentControls) -> AgentControlsResponse
         version=controls.version,
         updated_at=controls.updated_at,
     )
+
+
+def _verified_audit_signatures(
+    entries: Sequence[AuditEntry],
+    settings: Settings,
+) -> list[bool]:
+    signing_secret = (
+        settings.audit_signing_secret.get_secret_value()
+        if settings.audit_signing_secret is not None
+        else None
+    )
+    expected_previous_hash = ZERO_HASH
+    expected_sequence = 1
+    chain_valid = True
+    verified: list[bool] = []
+
+    for entry in entries:
+        canonical = json.dumps(
+            {
+                "action": entry.action,
+                "actor": entry.actor,
+                "details": entry.details,
+                "explanation": entry.explanation,
+                "outcome": entry.outcome,
+                "previous_hash": entry.previous_hash,
+                "purchase_run_id": str(entry.purchase_run_id),
+                "sequence_number": entry.sequence_number,
+            },
+            default=str,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        expected_entry_hash = sha256(canonical).hexdigest()
+        chain_valid = (
+            chain_valid
+            and entry.sequence_number == expected_sequence
+            and hmac.compare_digest(entry.previous_hash, expected_previous_hash)
+            and hmac.compare_digest(entry.entry_hash, expected_entry_hash)
+        )
+        signature_valid = False
+        if chain_valid and signing_secret is not None and entry.signature is not None:
+            expected_signature = hmac.new(
+                signing_secret.encode(),
+                entry.entry_hash.encode(),
+                sha256,
+            ).hexdigest()
+            signature_valid = hmac.compare_digest(entry.signature, expected_signature)
+        verified.append(signature_valid)
+        expected_previous_hash = entry.entry_hash
+        expected_sequence += 1
+
+    return verified
 
 
 def _new_session(user_id: UUID) -> tuple[AuthSession, SessionCredentials]:
@@ -214,8 +270,12 @@ async def get_agent_controls(
     principal: CurrentPrincipalDependency,
 ) -> AgentControlsResponse:
     async with database.session() as session:
-        controls = await AccountRepository(session).get_or_create_controls(principal.user.id)
-        await session.commit()
+        controls = await AccountRepository(session).get_controls(principal.user.id)
+        if controls is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Shopping-agent controls are not initialized for this account",
+            )
         return _controls_response(controls)
 
 
@@ -253,8 +313,10 @@ async def get_order_history(
     items: list[OrderHistoryItem] = []
     for order in orders:
         provider_order_id = order.provider_order_id
+        provider_status = order.provider_status
         if (
             provider_order_id is None
+            or provider_status is None
             or order.operation_state != ProviderOrderOperationState.CREATED.value
         ):
             continue
@@ -264,7 +326,7 @@ async def get_order_history(
                 run_id=order.purchase_run_id,
                 quote_id=order.quote_id,
                 provider_order_id=provider_order_id,
-                status=order.provider_status or "created",
+                status=provider_status,
                 operation_state=order.operation_state,
                 amount_paise=order.amount_paise,
                 currency="INR",
@@ -317,6 +379,7 @@ async def get_transaction_history(
 async def get_purchase_audit(
     run_id: UUID,
     database: DatabaseDependency,
+    settings: SettingsDependency,
     principal: CurrentPrincipalDependency,
 ) -> AuditHistoryResponse:
     async with database.session() as session:
@@ -331,6 +394,7 @@ async def get_purchase_audit(
             run_id=run_id,
             buyer_user_id=principal.user.id,
         )
+    signatures = _verified_audit_signatures(entries, settings)
     return AuditHistoryResponse(
         run_id=run_id,
         items=[
@@ -345,9 +409,9 @@ async def get_purchase_audit(
                 details=dict(entry.details),
                 previous_hash=entry.previous_hash,
                 entry_hash=entry.entry_hash,
-                signed=entry.signature is not None,
+                signed=signature_verified,
                 created_at=entry.created_at,
             )
-            for entry in entries
+            for entry, signature_verified in zip(entries, signatures, strict=True)
         ],
     )

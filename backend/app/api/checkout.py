@@ -3,10 +3,11 @@
 from typing import Annotated, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Header, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
 from backend.app.config import Settings
 from backend.app.database import Database
+from backend.app.dependencies import get_database, get_runtime_settings
 from backend.app.schemas.checkout import (
     CheckoutCallbackRequest,
     CheckoutSessionResponse,
@@ -23,6 +24,8 @@ _IDEMPOTENCY_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
 )
 
+DatabaseDependency = Annotated[Database, Depends(get_database)]
+SettingsDependency = Annotated[Settings, Depends(get_runtime_settings)]
 IdempotencyKeyHeader = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=16, max_length=128),
@@ -66,6 +69,49 @@ def _normalize_idempotency_key(value: str) -> str:
     return normalized
 
 
+def _is_unknown(result: PurchaseRunStatusResponse) -> bool:
+    return result.state == "PAYMENT_UNKNOWN" or result.payment_state == "UNKNOWN"
+
+
+def _webhook_too_large() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        detail={"code": "WEBHOOK_TOO_LARGE", "message": "Webhook body is too large"},
+    )
+
+
+async def _read_bounded_webhook_body(request: Request) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            declared_length = int(content_length)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "INVALID_CONTENT_LENGTH",
+                    "message": "Content-Length must be a non-negative integer",
+                },
+            ) from exc
+        if declared_length < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "code": "INVALID_CONTENT_LENGTH",
+                    "message": "Content-Length must be a non-negative integer",
+                },
+            )
+        if declared_length > MAX_WEBHOOK_BODY_BYTES:
+            raise _webhook_too_large()
+
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_WEBHOOK_BODY_BYTES:
+            raise _webhook_too_large()
+        body.extend(chunk)
+    return bytes(body)
+
+
 @router.post(
     "/api/checkout/orders",
     response_model=CheckoutSessionResponse,
@@ -75,8 +121,8 @@ async def create_checkout_order(
     payload: CreateCheckoutRequest,
     idempotency_key: IdempotencyKeyHeader,
     principal: CsrfPrincipalDependency,
-    database: Database,
-    settings: Settings,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
 ) -> CheckoutSessionResponse:
     try:
         return await _service(database, settings).create_order(
@@ -95,8 +141,8 @@ async def create_checkout_order(
 async def get_checkout_status(
     run_id: UUID,
     principal: CurrentPrincipalDependency,
-    database: Database,
-    settings: Settings,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
 ) -> PurchaseRunStatusResponse:
     try:
         return await _service(database, settings).get_status(
@@ -116,12 +162,12 @@ async def confirm_checkout_payment(
     payload: CheckoutCallbackRequest,
     response: Response,
     principal: CsrfPrincipalDependency,
-    database: Database,
-    settings: Settings,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
 ) -> PurchaseRunStatusResponse:
     service = _service(database, settings)
     try:
-        return await service.confirm_payment(
+        result = await service.confirm_payment(
             buyer_user_id=principal.user.id,
             run_id=run_id,
             callback=payload,
@@ -129,14 +175,16 @@ async def confirm_checkout_payment(
     except CheckoutServiceError as error:
         if error.code != "PAYMENT_UNKNOWN" or error.status_code != status.HTTP_202_ACCEPTED:
             _raise_service_error(error)
-        response.status_code = status.HTTP_202_ACCEPTED
         try:
-            return await service.get_status(
+            result = await service.get_status(
                 buyer_user_id=principal.user.id,
                 run_id=run_id,
             )
         except CheckoutServiceError as status_error:
             _raise_service_error(status_error)
+    if _is_unknown(result):
+        response.status_code = status.HTTP_202_ACCEPTED
+    return result
 
 
 @router.post(
@@ -147,8 +195,8 @@ async def reconcile_checkout_payment(
     run_id: UUID,
     response: Response,
     principal: CsrfPrincipalDependency,
-    database: Database,
-    settings: Settings,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
 ) -> PurchaseRunStatusResponse:
     try:
         result = await _service(database, settings).reconcile(
@@ -157,7 +205,7 @@ async def reconcile_checkout_payment(
         )
     except CheckoutServiceError as error:
         _raise_service_error(error)
-    if result.state == "PAYMENT_UNKNOWN" or result.payment_state == "UNKNOWN":
+    if _is_unknown(result):
         response.status_code = status.HTTP_202_ACCEPTED
     return result
 
@@ -170,8 +218,8 @@ async def process_razorpay_webhook(
     request: Request,
     signature: WebhookSignatureHeader,
     provider_event_id: WebhookEventIdHeader,
-    database: Database,
-    settings: Settings,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
 ) -> RazorpayWebhookResponse:
     if not settings.razorpay_webhook_configured:
         raise HTTPException(
@@ -190,15 +238,10 @@ async def process_razorpay_webhook(
             },
         )
 
-    raw_body = await request.body()
-    if len(raw_body) > MAX_WEBHOOK_BODY_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail={"code": "WEBHOOK_TOO_LARGE", "message": "Webhook body is too large"},
-        )
+    raw_body = await _read_bounded_webhook_body(request)
     normalized_signature = signature.strip()
     normalized_event_id = provider_event_id.strip()
-    if not normalized_signature or not normalized_event_id:
+    if not 32 <= len(normalized_signature) <= 256 or not 1 <= len(normalized_event_id) <= 128:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"code": "INVALID_WEBHOOK_HEADERS", "message": "Webhook headers are invalid"},
