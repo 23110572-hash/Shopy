@@ -143,31 +143,36 @@ function Navigation({ page, cartCount, online, onNavigate }: NavigationProps) {
   )
 }
 
+function catalogImageSrc(sku: string): string {
+  return `/catalog/${sku}.jpg`
+}
+
+function CatalogImage({ product, imgClassName, fallback }: { product: CatalogProduct; imgClassName: string; fallback: React.ReactNode }) {
+  const [error, setError] = useState(false)
+  if (error) return <>{fallback}</>
+  return (
+    <img
+      src={catalogImageSrc(product.sku)}
+      alt={product.title}
+      className={imgClassName}
+      loading="lazy"
+      onError={() => setError(true)}
+    />
+  )
+}
+
 function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (product: CatalogProduct) => void }) {
   const discount = product.mrp_paise
     ? Math.max(0, Math.round((1 - product.offer_price_paise / product.mrp_paise) * 100))
     : 0
-  const [imageError, setImageError] = useState(false)
-  
-  const handleImageError = () => {
-    console.warn(`Image failed to load for ${product.sku}: ${product.image_url}`)
-    setImageError(true)
-  }
-  
   return (
     <article className="product-card">
       <div className={`product-visual visual-${product.category}`}>
-        {product.image_url && !imageError ? (
-          <img 
-            src={product.image_url} 
-            alt={product.title} 
-            className="product-image" 
-            loading="lazy"
-            onError={handleImageError}
-          />
-        ) : (
-          <span className="visual-glyph" aria-hidden="true">{categoryGlyphs[product.category]}</span>
-        )}
+        <CatalogImage
+          product={product}
+          imgClassName="product-image"
+          fallback={<span className="visual-glyph" aria-hidden="true">{categoryGlyphs[product.category]}</span>}
+        />
         <span className="brand-chip">{product.brand}</span>
         {discount > 0 ? <span className="discount-chip">−{discount}%</span> : null}
         <i className="orbit orbit-one" /><i className="orbit orbit-two" />
@@ -259,7 +264,7 @@ function CartView({ cart, onQuantity, onRemove, onBrowse }: CartProps) {
           <div className="cart-list">
             {cart.map(({ product, quantity }) => (
               <article className="cart-row" key={product.id}>
-                <div className={`cart-art visual-${product.category}`}>{categoryGlyphs[product.category]}</div>
+                <div className={`cart-art visual-${product.category}`}><CatalogImage product={product} imgClassName="cart-image" fallback={categoryGlyphs[product.category]} /></div>
                 <div className="cart-info"><span>{product.brand} · {product.category}</span><h2>{product.title}</h2><p>{formatPrice(product.offer_price_paise)} each · {product.inventory_quantity} currently in stock</p><button type="button" onClick={() => onRemove(product.id)}>Remove</button></div>
                 <div className="quantity-control"><button type="button" onClick={() => onQuantity(product.id, quantity - 1)} aria-label="Decrease quantity">−</button><span>{quantity}</span><button type="button" onClick={() => onQuantity(product.id, quantity + 1)} disabled={quantity >= product.inventory_quantity} aria-label="Increase quantity">+</button></div>
                 <strong className="line-total">{formatPrice(product.offer_price_paise * quantity)}</strong>
@@ -318,7 +323,7 @@ function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value:
             {messages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
                 <div className="chat-bubble">{message.text}</div>
-                {message.response ? <><small className="parser-note">{message.response.parser_notice}</small><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}>{categoryGlyphs[recommendation.product.category]}</div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div><small className="agent-notice">{message.response.notice}</small></> : null}
+                {message.response ? <><small className="parser-note">{message.response.parser_notice}</small><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}><CatalogImage product={recommendation.product} imgClassName="result-image" fallback={categoryGlyphs[recommendation.product.category]} /></div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div><small className="agent-notice">{message.response.notice}</small></> : null}
               </div>
             ))}
             {busy ? <div className="agent-typing" aria-label="Shopy Agent is searching"><span /><span /><span /></div> : null}
