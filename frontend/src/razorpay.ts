@@ -1,6 +1,48 @@
-import type { CheckoutCallback, CheckoutSession } from './types'
+import type { CheckoutCallback, CheckoutSession, RazorpayHandoff } from './types'
 
 const RAZORPAY_SCRIPT_URL = 'https://checkout.razorpay.com/v1/checkout.js'
+
+/** Provider-agnostic description of one Razorpay Standard Checkout attempt. */
+export interface RazorpayCheckoutRequest {
+  keyId: string
+  orderId: string
+  amountPaise: number
+  currency: string
+  name: string
+  description: string
+  prefillName: string
+  prefillEmail: string
+  prefillContact?: string
+}
+
+/** Agent purchase proposals hand off a server-created checkout session. */
+export function fromCheckoutSession(session: CheckoutSession): RazorpayCheckoutRequest {
+  return {
+    keyId: session.key_id,
+    orderId: session.order_id,
+    amountPaise: session.amount_paise,
+    currency: session.currency,
+    name: session.merchant_name,
+    description: session.description,
+    prefillName: session.prefill_name,
+    prefillEmail: session.prefill_email,
+  }
+}
+
+/** Cart orders hand off the equivalent details from the order response. */
+export function fromOrderHandoff(handoff: RazorpayHandoff): RazorpayCheckoutRequest {
+  return {
+    keyId: handoff.key_id,
+    orderId: handoff.provider_order_id,
+    amountPaise: handoff.amount_paise,
+    currency: handoff.currency,
+    name: handoff.merchant_name,
+    description: handoff.description,
+    prefillName: handoff.prefill_name,
+    prefillEmail: handoff.prefill_email,
+    prefillContact: handoff.prefill_contact,
+  }
+}
 
 interface RazorpayHandlerResponse {
   razorpay_payment_id?: unknown
@@ -19,7 +61,7 @@ interface RazorpayOptions {
   name: string
   description: string
   order_id: string
-  prefill: { name: string; email: string }
+  prefill: { name: string; email: string; contact?: string }
   theme: { color: string }
   handler: (response: RazorpayHandlerResponse) => void
   modal: { ondismiss: () => void; escape: boolean }
@@ -86,7 +128,9 @@ function readProviderField(value: unknown, field: string): string {
  * resolve with the raw provider callback. The signature is verified
  * server-side; nothing here is trusted as proof of payment.
  */
-export function openRazorpayCheckout(session: CheckoutSession): Promise<CheckoutCallback> {
+export function openRazorpayCheckout(
+  request: RazorpayCheckoutRequest,
+): Promise<CheckoutCallback> {
   return new Promise<CheckoutCallback>((resolve, reject) => {
     const Constructor = window.Razorpay
     if (!Constructor) {
@@ -102,13 +146,17 @@ export function openRazorpayCheckout(session: CheckoutSession): Promise<Checkout
     }
 
     const instance = new Constructor({
-      key: session.key_id,
-      amount: session.amount_paise,
-      currency: session.currency,
-      name: session.merchant_name,
-      description: session.description,
-      order_id: session.order_id,
-      prefill: { name: session.prefill_name, email: session.prefill_email },
+      key: request.keyId,
+      amount: request.amountPaise,
+      currency: request.currency,
+      name: request.name,
+      description: request.description,
+      order_id: request.orderId,
+      prefill: {
+        name: request.prefillName,
+        email: request.prefillEmail,
+        ...(request.prefillContact ? { contact: request.prefillContact } : {}),
+      },
       theme: { color: '#5b3df5' },
       handler: (response) => {
         finish(() => {

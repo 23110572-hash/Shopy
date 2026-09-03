@@ -260,3 +260,113 @@ export interface TransactionHistoryResponse {
   items: TransactionHistoryItem[]
   reason: string
 }
+
+/* ---------------------------------------------------------------- cart orders */
+
+export type PaymentMethod = 'COD' | 'RAZORPAY'
+export type OrderStatus = 'PENDING_PAYMENT' | 'CONFIRMED' | 'PAYMENT_FAILED' | 'CANCELLED'
+export type OrderPaymentStatus = 'PENDING' | 'PAID' | 'FAILED'
+
+export interface DeliveryAddressInput {
+  full_name: string
+  phone: string
+  line1: string
+  line2: string | null
+  landmark: string | null
+  city: string
+  state: string
+  postal_code: string
+  is_default: boolean
+}
+
+export interface DeliveryAddress {
+  id: string
+  full_name: string
+  phone: string
+  line1: string
+  line2: string | null
+  landmark: string | null
+  city: string
+  state: string
+  postal_code: string
+  country: 'IN'
+  is_default: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface DeliveryAddressList {
+  items: DeliveryAddress[]
+}
+
+export interface OrderItem {
+  product_id: string
+  sku: string
+  title: string
+  brand: string
+  model: string
+  category: string
+  unit_amount_paise: number
+  quantity: number
+  line_total_paise: number
+}
+
+export interface ShippingAddressSnapshot {
+  full_name: string
+  phone: string
+  line1: string
+  line2: string | null
+  landmark: string | null
+  city: string
+  state: string
+  postal_code: string
+  country: string
+}
+
+export interface CustomerOrder {
+  id: string
+  order_number: string
+  status: OrderStatus
+  payment_method: PaymentMethod
+  payment_status: OrderPaymentStatus
+  item_count: number
+  subtotal_paise: number
+  shipping_paise: number
+  total_paise: number
+  currency: 'INR'
+  shipping_address: ShippingAddressSnapshot
+  items: OrderItem[]
+  placed_at: string | null
+  paid_at: string | null
+  failure_reason: string | null
+  created_at: string
+  message: string
+}
+
+export interface RazorpayHandoff {
+  key_id: string
+  provider_order_id: string
+  amount_paise: number
+  currency: 'INR'
+  merchant_name: string
+  description: string
+  prefill_name: string
+  prefill_email: string
+  prefill_contact: string
+  test_mode: true
+}
+
+export interface PlaceOrderResponse {
+  order: CustomerOrder
+  razorpay: RazorpayHandoff | null
+}
+
+export interface PlaceOrderRequest {
+  address_id: string
+  payment_method: PaymentMethod
+  items: Array<{ product_id: string; quantity: number }>
+}
+
+export interface OrderListResponse {
+  items: CustomerOrder[]
+}

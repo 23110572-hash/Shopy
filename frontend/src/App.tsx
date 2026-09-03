@@ -9,8 +9,14 @@ import {
   reconcileCheckoutPayment,
   sendAgentChat,
 } from './api'
-import { CheckoutDismissedError, loadRazorpayCheckout, openRazorpayCheckout } from './razorpay'
+import {
+  CheckoutDismissedError,
+  fromCheckoutSession,
+  loadRazorpayCheckout,
+  openRazorpayCheckout,
+} from './razorpay'
 import AccountCenter from './AccountCenter'
+import Checkout from './Checkout'
 import type {
   AgentChatResponse,
   AppPage,
@@ -259,14 +265,32 @@ interface CartProps {
   onQuantity: (id: string, quantity: number) => void
   onRemove: (id: string) => void
   onBrowse: () => void
+  onClear: () => void
+  onSignIn: () => void
 }
 
-function CartView({ cart, onQuantity, onRemove, onBrowse }: CartProps) {
+function CartView({ cart, onQuantity, onRemove, onBrowse, onClear, onSignIn }: CartProps) {
   const total = cart.reduce((sum, item) => sum + item.product.offer_price_paise * item.quantity, 0)
   const count = cart.reduce((sum, item) => sum + item.quantity, 0)
+  const [checkingOut, setCheckingOut] = useState(false)
+
+  if (checkingOut && cart.length > 0) {
+    return (
+      <main className="page interior-page">
+        <section className="page-heading"><span className="section-label">SECURE CHECKOUT</span><h1>Checkout</h1><p>Confirm your delivery address and choose how you want to pay.</p></section>
+        <Checkout
+          cart={cart}
+          onOrderConfirmed={onClear}
+          onBack={() => setCheckingOut(false)}
+          onSignIn={onSignIn}
+        />
+      </main>
+    )
+  }
+
   return (
     <main className="page interior-page">
-      <section className="page-heading"><span className="section-label">YOUR SAVED PICKS</span><h1>Your cart</h1><p>Saved on this device. Stock and price must be revalidated before any future checkout.</p></section>
+      <section className="page-heading"><span className="section-label">YOUR SAVED PICKS</span><h1>Your cart</h1><p>Saved on this device. Prices and stock are revalidated on the server when you place the order.</p></section>
       {cart.length === 0 ? (
         <section className="empty-cart"><div className="empty-icon"><Icon name="cart" /></div><h2>Your cart is ready for something good.</h2><p>Browse the live catalogue or ask Shopy Agent to narrow down the best match.</p><button className="primary-action" type="button" onClick={onBrowse}>Start shopping →</button></section>
       ) : (
@@ -281,7 +305,7 @@ function CartView({ cart, onQuantity, onRemove, onBrowse }: CartProps) {
               </article>
             ))}
           </div>
-          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Not calculated</strong></div><div className="order-total"><span>Estimated total</span><strong>{formatPrice(total)}</strong></div><button type="button" disabled>Checkout not connected</button><p>Shopy does not simulate payment. The payment gateway stays disabled until a signed purchase workflow exists.</p><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
+          <aside className="order-card"><span className="section-label">CART SUMMARY</span><div><span>Items</span><strong>{count}</strong></div><div><span>Delivery</span><strong>Free</strong></div><div className="order-total"><span>Order total</span><strong>{formatPrice(total)}</strong></div><button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button><p>Choose cash on delivery or pay online with Razorpay Test Mode on the next step.</p><button className="continue-button" type="button" onClick={onBrowse}>← Continue shopping</button></aside>
         </section>
       )}
     </main>
@@ -344,7 +368,7 @@ function ProposalCheckout({ proposal }: { proposal: PurchaseProposal }) {
       ])
       runId = session.run_id
       setPhase('opening')
-      const callback = await openRazorpayCheckout(session)
+      const callback = await openRazorpayCheckout(fromCheckoutSession(session))
       setPhase('confirming')
       setStatus(await confirmCheckoutPayment(session.run_id, callback))
       setPhase('settled')
@@ -569,7 +593,7 @@ function App() {
     <div className="app-shell">
       <Navigation page={page} cartCount={cartCount} online={health?.database === 'ready'} onNavigate={navigate} />
       {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => setAgentOpen(true)} /> : null}
-      {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} /> : null}
+      {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} /> : null}
       {page === 'profile' ? <AccountCenter health={health} /> : null}
       <footer className="site-footer">
         <button type="button" onClick={() => navigate('home')} aria-label="Shopy home">

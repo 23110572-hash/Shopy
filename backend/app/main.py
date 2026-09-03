@@ -12,6 +12,7 @@ from app.api.catalog import product_router
 from app.api.catalog import router as catalog_router
 from app.api.checkout import router as checkout_router
 from app.api.health import router as health_router
+from app.api.orders import router as orders_router
 from app.config import Settings, get_settings
 from app.database import Database, DatabaseUnavailable
 
@@ -55,6 +56,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(agent_router)
     application.include_router(account_router)
     application.include_router(checkout_router)
+    application.include_router(orders_router)
     return application
 
 

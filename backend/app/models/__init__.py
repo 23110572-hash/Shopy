@@ -15,6 +15,14 @@ from app.models.commerce import (
     WebhookProcessingStatus,
 )
 from app.models.merchant import Merchant
+from app.models.orders import (
+    CustomerOrder,
+    CustomerOrderItem,
+    DeliveryAddress,
+    OrderPaymentStatus,
+    OrderStatus,
+    PaymentMethod,
+)
 from app.models.product import Product, ProductCategory
 from app.models.purchase_run import PurchaseRun
 from app.models.user import User, UserRole
@@ -23,8 +31,14 @@ __all__ = [
     "AuditEntry",
     "AuthSession",
     "Base",
+    "CustomerOrder",
+    "CustomerOrderItem",
+    "DeliveryAddress",
     "Merchant",
+    "OrderPaymentStatus",
+    "OrderStatus",
     "PaymentAttempt",
+    "PaymentMethod",
     "PaymentStatus",
     "Product",
     "ProductCategory",

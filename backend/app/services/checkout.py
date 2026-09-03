@@ -44,6 +44,7 @@ from app.schemas.checkout import (
     PurchaseRunStatusResponse,
     RazorpayWebhookResponse,
 )
+from app.services.orders import OrderService
 
 RESERVATION_TTL = timedelta(minutes=15)
 
@@ -331,12 +332,21 @@ class CheckoutService:
 
             local_order = await self._find_local_order(order_id)
             if local_order is None:
+                # Cart checkout orders are a separate rail from agent purchase
+                # runs. Settle those here so a closed browser still finalises.
+                settled = False
+                if order_id is not None:
+                    settled = await OrderService(
+                        self._database, self._settings
+                    ).settle_provider_order(order_id)
                 await self._finish_webhook(
                     provider_event_id,
-                    WebhookProcessingStatus.IGNORED,
+                    WebhookProcessingStatus.PROCESSED
+                    if settled
+                    else WebhookProcessingStatus.IGNORED,
                     error=None,
                 )
-                return RazorpayWebhookResponse(status="ignored")
+                return RazorpayWebhookResponse(status="processed" if settled else "ignored")
 
             try:
                 if payment_id is not None:

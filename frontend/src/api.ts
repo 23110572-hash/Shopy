@@ -8,9 +8,16 @@ import type {
   CatalogPage,
   CheckoutCallback,
   CheckoutSession,
+  CustomerOrder,
+  DeliveryAddress,
+  DeliveryAddressInput,
+  DeliveryAddressList,
   HealthStatus,
   LoginRequest,
   OrderHistoryResponse,
+  OrderListResponse,
+  PlaceOrderRequest,
+  PlaceOrderResponse,
   ProductCategory,
   PurchaseRunStatus,
   SignupRequest,
@@ -192,4 +199,70 @@ export function reconcileCheckoutPayment(runId: string): Promise<PurchaseRunStat
     method: 'POST',
     headers: protectedHeaders(),
   })
+}
+
+/* ------------------------------------------------- delivery addresses & orders */
+
+export function fetchAddresses(signal?: AbortSignal): Promise<DeliveryAddressList> {
+  return requestJson<DeliveryAddressList>('/api/account/addresses', { signal })
+}
+
+export function createAddress(payload: DeliveryAddressInput): Promise<DeliveryAddress> {
+  return requestJson<DeliveryAddress>('/api/account/addresses', {
+    method: 'POST',
+    headers: protectedHeaders(),
+    body: JSON.stringify(payload),
+  })
+}
+
+export function updateAddress(
+  addressId: string,
+  payload: DeliveryAddressInput,
+): Promise<DeliveryAddress> {
+  return requestJson<DeliveryAddress>(`/api/account/addresses/${addressId}`, {
+    method: 'PUT',
+    headers: protectedHeaders(),
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function deleteAddress(addressId: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/account/addresses/${addressId}`, {
+    method: 'DELETE',
+    headers: { Accept: 'application/json', ...protectedHeaders() },
+    credentials: 'include',
+  })
+  if (!response.ok) {
+    throw new ApiError(response.status, 'The address could not be removed.')
+  }
+}
+
+export function placeOrder(payload: PlaceOrderRequest): Promise<PlaceOrderResponse> {
+  return requestJson<PlaceOrderResponse>('/api/orders', {
+    method: 'POST',
+    headers: protectedHeaders(),
+    body: JSON.stringify(payload),
+  })
+}
+
+export function confirmOrderPayment(
+  orderId: string,
+  callback: CheckoutCallback,
+): Promise<CustomerOrder> {
+  return requestJson<CustomerOrder>(`/api/orders/${orderId}/confirm-payment`, {
+    method: 'POST',
+    headers: protectedHeaders(),
+    body: JSON.stringify(callback),
+  })
+}
+
+export function reconcileOrderPayment(orderId: string): Promise<CustomerOrder> {
+  return requestJson<CustomerOrder>(`/api/orders/${orderId}/reconcile`, {
+    method: 'POST',
+    headers: protectedHeaders(),
+  })
+}
+
+export function fetchOrders(signal?: AbortSignal): Promise<OrderListResponse> {
+  return requestJson<OrderListResponse>('/api/orders', { signal })
 }
