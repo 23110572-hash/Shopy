@@ -147,11 +147,24 @@ function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (prod
   const discount = product.mrp_paise
     ? Math.max(0, Math.round((1 - product.offer_price_paise / product.mrp_paise) * 100))
     : 0
+  const [imageError, setImageError] = useState(false)
+  
+  const handleImageError = () => {
+    console.warn(`Image failed to load for ${product.sku}: ${product.image_url}`)
+    setImageError(true)
+  }
+  
   return (
     <article className="product-card">
       <div className={`product-visual visual-${product.category}`}>
-        {product.image_url ? (
-          <img src={product.image_url} alt={product.title} className="product-image" loading="lazy" />
+        {product.image_url && !imageError ? (
+          <img 
+            src={product.image_url} 
+            alt={product.title} 
+            className="product-image" 
+            loading="lazy"
+            onError={handleImageError}
+          />
         ) : (
           <span className="visual-glyph" aria-hidden="true">{categoryGlyphs[product.category]}</span>
         )}
