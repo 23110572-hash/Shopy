@@ -1107,6 +1107,14 @@ p {
   border-radius: 16px;
   color: rgba(23, 21, 29, 0.7);
   font-size: 63px;
+  overflow: hidden;
+}
+
+.cart-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 10px;
 }
 
 .cart-info>span {
@@ -1694,6 +1702,14 @@ p {
   height: 54px;
   border-radius: 10px;
   font-size: 35px;
+  overflow: hidden;
+}
+
+.result-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 5px;
 }
 
 .agent-results article>div:nth-child(2) {

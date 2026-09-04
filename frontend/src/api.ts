@@ -65,9 +65,16 @@ export function sendAgentChat(payload: AgentChatRequest, signal?: AbortSignal) {
 export function createAgentConversation(title?: string) {
   return requestJson<AgentConversationSummary>('/api/agent/conversations', { method: 'POST', headers: protectedHeaders(), body: JSON.stringify({ title: title ?? null }) })
 }
-export const fetchAgentConversations = (signal?: AbortSignal) => requestJson<AgentConversationList>('/api/agent/conversations', { signal })
+export async function fetchAgentConversations(signal?: AbortSignal): Promise<AgentConversationList> {
+  const result = await requestJson<AgentConversationList>('/api/agent/conversations', { signal })
+  return { items: result.items.filter((conversation) => conversation.status === 'ACTIVE') }
+}
 export const fetchAgentConversation = (id: string, signal?: AbortSignal) => requestJson<AgentConversationDetail>(`/api/agent/conversations/${id}`, { signal })
 export const closeAgentConversation = (id: string) => requestJson<void>(`/api/agent/conversations/${id}`, { method: 'DELETE', headers: protectedHeaders() })
+export async function clearAgentHistory(): Promise<void> {
+  const result = await fetchAgentConversations()
+  await Promise.all(result.items.map((conversation) => closeAgentConversation(conversation.conversation_id)))
+}
 export const fetchAgentRuns = (signal?: AbortSignal) => requestJson<AgentRunHistoryResponse>('/api/account/runs', { signal })
 export const fetchRunAudit = (runId: string, signal?: AbortSignal) => requestJson<AuditHistoryResponse>(`/api/account/runs/${runId}/audit`, { signal })
 

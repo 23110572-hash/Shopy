@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import logoPng from './assets/logo.png'
 import {
   ApiError,
+  clearAgentHistory,
   fetchAccountProfile,
   fetchAgentControls,
   fetchOrderHistory,
