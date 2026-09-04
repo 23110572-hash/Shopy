@@ -322,7 +322,6 @@ function CartView({
             {signedIn ? (
               <>
                 <button type="button" onClick={() => setCheckingOut(true)}>Proceed to checkout →</button>
-                <p>Choose cash on delivery or pay online with Razorpay Test Mode on the next step.</p>
               </>
             ) : (
               <>
