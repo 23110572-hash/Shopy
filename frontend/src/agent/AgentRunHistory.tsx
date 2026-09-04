@@ -44,7 +44,7 @@ export default function AgentRunHistory({ refreshKey = 0 }: { refreshKey?: numbe
 
   return <section className="account-panel agent-history payment-audit-panel" aria-label="Payment audit timeline">
     <header className="payment-audit-heading">
-      <div><span>PAYMENT GOVERNANCE</span><h2>Payment audit timeline</h2><p>Purchase, Razorpay payment, and fulfilment events recorded by Shopy. Chat sessions are not shown here.</p></div>
+      <div><span>PAYMENT GOVERNANCE</span><h2>Payment audit timeline</h2></div>
       <b>{runs.length} {runs.length === 1 ? 'run' : 'runs'}</b>
     </header>
     {error ? <p className="agent-inline-error payment-audit-error">{error}</p> : null}
