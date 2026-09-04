@@ -5,7 +5,7 @@ export type ProductCategory =
   | 'laptops'
   | 'tablets'
 
-export type AppPage = 'home' | 'agent' | 'cart' | 'profile'
+export type AppPage = 'home' | 'cart' | 'profile'
 
 export interface CatalogProduct {
   id: string

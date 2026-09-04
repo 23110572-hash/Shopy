@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import logoPng from './assets/logo.png'
+import AgentRunHistory from './agent/AgentRunHistory'
 import {
   ApiError,
   clearAgentHistory,
@@ -23,7 +24,7 @@ import type {
   TransactionHistoryResponse,
 } from './types'
 
-type AccountTab = 'auth' | 'overview' | 'orders' | 'transactions' | 'agent' | 'security'
+type AccountTab = 'auth' | 'overview' | 'orders' | 'transactions' | 'audit' | 'agent' | 'security'
 type AuthMode = 'login' | 'signup'
 
 type SessionState = 'loading' | 'guest' | 'authenticated'
@@ -294,6 +295,7 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
     { id: sessionState === 'guest' ? 'auth' : 'overview', label: sessionState === 'guest' ? 'Log in / Sign up' : 'Account overview', glyph: sessionState === 'guest' ? '→' : '○' },
     { id: 'orders', label: 'Your orders', glyph: '▤' },
     { id: 'transactions', label: 'Transactions', glyph: '↔' },
+    { id: 'audit', label: 'Payment audit', glyph: '⌁' },
     { id: 'agent', label: 'Agent controls', glyph: '✦' },
     { id: 'security', label: 'Login & security', glyph: '◇' },
   ]
@@ -347,6 +349,8 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
           {activeTab === 'orders' ? <section className="account-panel history-panel"><header><div><span>ORDER HISTORY</span><h2>Your orders</h2><p>Only checkout records written by the signed purchase workflow.</p></div><b>{orders?.items.length ?? 0} orders</b></header>{orders?.items.length ? <div className="history-list">{orders.items.map((order) => <article key={order.order_id}><span>Order {order.order_id.slice(0, 8)}</span><strong>{formatPrice(order.amount_paise)}</strong><div className="history-meta"><span className={`status-badge status-${order.status.toLowerCase()}`}>{order.status}</span><small>· {formatDate(order.created_at)}</small></div></article>)}</div> : <HistoryEmpty kind="order" title="No authoritative orders yet" reason={orders?.reason ?? 'Loading order history…'} />}</section> : null}
 
           {activeTab === 'transactions' ? <section className="account-panel history-panel"><header><div><span>PAYMENT LEDGER</span><h2>Transactions</h2><p>Verified payment events only—never cart estimates.</p></div><b>{transactions?.items.length ?? 0} transactions</b></header>{transactions?.items.length ? <div className="history-list">{transactions.items.map((transaction) => <article key={transaction.transaction_id}><span>Razorpay · {transaction.transaction_id.slice(0, 8)}</span><strong>{formatPrice(transaction.amount_paise)}</strong><div className="history-meta"><span className={`status-badge status-${transaction.status.toLowerCase()}`}>{transaction.status}</span><small>· {formatDate(transaction.created_at)}</small></div></article>)}</div> : <HistoryEmpty kind="transaction" title="No verified transactions yet" reason={transactions?.reason ?? 'Loading transaction history…'} />}</section> : null}
+
+          {activeTab === 'audit' ? <AgentRunHistory /> : null}
 
           {activeTab === 'agent' ? <section className="account-panel agent-control-panel">
             <header><div><span>SHOPY AGENT</span><h2>Agent controls</h2><p>Keep the Agent simple: turn it on, set one purchase limit, and choose categories.</p></div><label className="master-switch"><input type="checkbox" checked={draftControls?.agent_enabled ?? false} onChange={(event) => setDraftControls((current) => current ? { ...current, agent_enabled: event.target.checked } : current)} /><span /><b>{draftControls?.agent_enabled ? 'Agent on' : 'Agent off'}</b></label></header>

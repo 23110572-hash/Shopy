@@ -1,15 +1,42 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, closeAgentConversation, createAgentConversation, fetchAgentConversation, fetchAgentConversations, sendAgentChat } from '../api'
 import type { AccountProfile, AgentChatRequest, AgentChatResponse, AgentConversationDetail, AgentConversationSummary, PurchaseProposal } from '../types'
 import AgentCheckout from './AgentCheckout'
-import AgentRunHistory from './AgentRunHistory'
 import './agent-workspace.css'
 
 const id = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`
 const money = (paise: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(paise / 100)
 type ViewTurn = { id: string; role: 'user' | 'agent'; text: string; response?: AgentChatResponse }
 
-export default function AgentWorkspace({ profile, sessionChecked, onSignIn }: { profile: AccountProfile | null; sessionChecked: boolean; onSignIn: () => void }) {
+type BrowserSpeechResult = { readonly isFinal: boolean; readonly 0?: { readonly transcript: string } }
+type BrowserSpeechResultEvent = { readonly results: ArrayLike<BrowserSpeechResult> }
+type BrowserSpeechErrorEvent = { readonly error: string }
+interface BrowserSpeechRecognition {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  onresult: ((event: BrowserSpeechResultEvent) => void) | null
+  onerror: ((event: BrowserSpeechErrorEvent) => void) | null
+  onend: (() => void) | null
+  start: () => void
+  stop: () => void
+  abort: () => void
+}
+type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition
+type SpeechCapableWindow = Window & typeof globalThis & {
+  SpeechRecognition?: BrowserSpeechRecognitionConstructor
+  webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
+}
+
+function speechErrorMessage(code: string): string {
+  if (code === 'not-allowed' || code === 'service-not-allowed') return 'Microphone permission was denied. Allow microphone access and try again.'
+  if (code === 'no-speech') return 'No speech was detected. Please try again.'
+  if (code === 'audio-capture') return 'No working microphone was found.'
+  if (code === 'network') return 'Speech recognition is temporarily unavailable.'
+  return 'Speech recognition could not understand that. Please try again.'
+}
+
+export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onClose }: { profile: AccountProfile | null; sessionChecked: boolean; onSignIn: () => void; onClose: () => void }) {
   const [conversations, setConversations] = useState<AgentConversationSummary[]>([])
   const [current, setCurrent] = useState<AgentConversationDetail | null>(null)
   const [turns, setTurns] = useState<ViewTurn[]>([])
@@ -17,10 +44,10 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn }: { 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [proposal, setProposal] = useState<PurchaseProposal | null>(null)
-  const [historyKey, setHistoryKey] = useState(0)
+  const [listening, setListening] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
+  const speechRef = useRef<BrowserSpeechRecognition | null>(null)
 
-  const latest = useMemo(() => [...turns].reverse().find((turn) => turn.response)?.response ?? null, [turns])
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, busy])
   useEffect(() => {
     if (!profile) { setConversations([]); setCurrent(null); return }
@@ -28,6 +55,15 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn }: { 
     fetchAgentConversations(controller.signal).then((result) => { setConversations(result.items); if (result.items[0]) void openConversation(result.items[0].conversation_id) }).catch((reason: unknown) => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Conversations are unavailable.') })
     return () => controller.abort()
   }, [profile?.id])
+  useEffect(() => () => {
+    const recognition = speechRef.current
+    if (!recognition) return
+    recognition.onresult = null
+    recognition.onerror = null
+    recognition.onend = null
+    recognition.abort()
+    speechRef.current = null
+  }, [])
 
   async function openConversation(conversationId: string) {
     setBusy(true); setError(null)
@@ -67,6 +103,57 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn }: { 
     } finally { setBusy(false) }
   }
 
+  function toggleSpeechRecognition() {
+    if (speechRef.current) {
+      speechRef.current.stop()
+      return
+    }
+
+    const speechWindow = window as SpeechCapableWindow
+    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setError('Speech recognition is not supported in this browser. Try the latest Chrome or Edge.')
+      return
+    }
+
+    const recognition = new SpeechRecognition()
+    let submitted = false
+    recognition.lang = 'en-IN'
+    recognition.continuous = false
+    recognition.interimResults = false
+    recognition.onresult = (event) => {
+      const transcript = Array.from(event.results)
+        .filter((result) => result.isFinal)
+        .map((result) => result[0]?.transcript ?? '')
+        .join(' ')
+        .trim()
+      if (!transcript || submitted) return
+      submitted = true
+      setDraft(transcript)
+      void submit(transcript)
+    }
+    recognition.onerror = (event) => {
+      if (event.error !== 'aborted') setError(speechErrorMessage(event.error))
+      setListening(false)
+      if (speechRef.current === recognition) speechRef.current = null
+    }
+    recognition.onend = () => {
+      setListening(false)
+      if (speechRef.current === recognition) speechRef.current = null
+    }
+
+    speechRef.current = recognition
+    setError(null)
+    try {
+      recognition.start()
+      setListening(true)
+    } catch {
+      speechRef.current = null
+      setListening(false)
+      setError('The microphone could not be started. Please try again.')
+    }
+  }
+
   function recommendationCards(response: AgentChatResponse) {
     return <>
       {response.clarification ? <div className="clarification-options">{response.clarification.options.map((option) => <button type="button" key={option.product_id} onClick={() => submit(option.label, { selected_product_id: option.product_id })}>{option.label}</button>)}</div> : null}
@@ -77,12 +164,15 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn }: { 
     </>
   }
 
-  return <main className="agent-workspace">
-    <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1><p>Exact catalogue resolution, policy-bounded recommendations, explicit address and Razorpay confirmation, with every decision recorded.</p></div><button className="agent-new-button" type="button" onClick={newConversation}>+ New session</button></header>
-    <div className="agent-layout">
-      <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
-      <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Tell me an exact brand/model, category, feature, or budget. I will clarify ambiguity instead of guessing.</div><div className="agent-recovery"><button type="button" onClick={() => setDraft('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => setDraft('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button type="submit" disabled={!draft.trim() || busy}>→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
-      <aside className="agent-inspector">{proposal ? <AgentCheckout proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => setHistoryKey((value) => value + 1)}/> : <section className="agent-checkout-gate"><strong>Recommendation mode</strong><p>Ask for recommendations to compare only. Say “buy me…” or “order…” when you want address confirmation and Razorpay checkout.</p></section>}{profile ? <AgentRunHistory refreshKey={historyKey}/> : null}{latest?.notice ? <p className="agent-empty-copy">{latest.notice}</p> : null}</aside>
-    </div>
-  </main>
+  return <div className="agent-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+    <main className="agent-workspace agent-modal" role="dialog" aria-modal="true" aria-label="Shopy Agent">
+      <button className="agent-modal-close" type="button" onClick={onClose} aria-label="Close Shopy Agent">×</button>
+      <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1><p>Exact catalogue resolution, policy-bounded recommendations, explicit address and Razorpay confirmation, with every decision recorded.</p></div><button className="agent-new-button" type="button" onClick={newConversation}>+ New session</button></header>
+      <div className={proposal ? 'agent-layout with-checkout' : 'agent-layout'}>
+        <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
+        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => setDraft('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => setDraft('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy} aria-label={listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
+        {proposal ? <aside className="agent-inspector"><AgentCheckout proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></aside> : null}
+      </div>
+    </main>
+  </div>
 }
