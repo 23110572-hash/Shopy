@@ -29,7 +29,7 @@ type SpeechCapableWindow = Window & typeof globalThis & {
 }
 
 function speechErrorMessage(code: string): string {
-  if (code === 'not-allowed' || code === 'service-not-allowed') return 'Microphone permission was denied. Allow microphone access and try again.'
+  if (code === 'not-allowed' || code === 'service-not-allowed') return 'Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.'
   if (code === 'no-speech') return 'No speech was detected. Please try again.'
   if (code === 'audio-capture') return 'No working microphone was found.'
   if (code === 'network') return 'Speech recognition is temporarily unavailable.'
@@ -45,8 +45,10 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
   const [error, setError] = useState<string | null>(null)
   const [proposal, setProposal] = useState<PurchaseProposal | null>(null)
   const [listening, setListening] = useState(false)
+  const [requestingMic, setRequestingMic] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
   const speechRef = useRef<BrowserSpeechRecognition | null>(null)
+  const microphoneReadyRef = useRef(false)
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, busy])
   useEffect(() => {
@@ -103,7 +105,34 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     } finally { setBusy(false) }
   }
 
-  function toggleSpeechRecognition() {
+  async function requestMicrophoneAccess(): Promise<boolean> {
+    if (microphoneReadyRef.current) return true
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setError('Microphone access requires HTTPS and a browser with media-device support.')
+      return false
+    }
+    setRequestingMic(true)
+    setError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      stream.getTracks().forEach((track) => track.stop())
+      microphoneReadyRef.current = true
+      return true
+    } catch (reason) {
+      if (reason instanceof DOMException && (reason.name === 'NotAllowedError' || reason.name === 'SecurityError')) {
+        setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
+      } else if (reason instanceof DOMException && reason.name === 'NotFoundError') {
+        setError('No working microphone was found.')
+      } else {
+        setError('The browser could not open your microphone. Check the site permission and try again.')
+      }
+      return false
+    } finally {
+      setRequestingMic(false)
+    }
+  }
+
+  async function toggleSpeechRecognition() {
     if (speechRef.current) {
       speechRef.current.stop()
       return
@@ -115,6 +144,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       setError('Speech recognition is not supported in this browser. Try the latest Chrome or Edge.')
       return
     }
+    if (!await requestMicrophoneAccess()) return
 
     const recognition = new SpeechRecognition()
     let submitted = false
@@ -168,10 +198,9 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     <main className="agent-workspace agent-modal" role="dialog" aria-modal="true" aria-label="Shopy Agent">
       <button className="agent-modal-close" type="button" onClick={onClose} aria-label="Close Shopy Agent">×</button>
       <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1><p>Exact catalogue resolution, policy-bounded recommendations, explicit address and Razorpay confirmation, with every decision recorded.</p></div><button className="agent-new-button" type="button" onClick={newConversation}>+ New session</button></header>
-      <div className={proposal ? 'agent-layout with-checkout' : 'agent-layout'}>
+      <div className="agent-layout">
         <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
-        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => setDraft('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => setDraft('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy} aria-label={listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
-        {proposal ? <aside className="agent-inspector"><AgentCheckout proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></aside> : null}
+        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => setDraft('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => setDraft('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{proposal ? <div className="agent-inline-checkout"><AgentCheckout proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></div> : null}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}${requestingMic ? ' requesting' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy || requestingMic} aria-label={requestingMic ? 'Requesting microphone access' : listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
       </div>
     </main>
   </div>

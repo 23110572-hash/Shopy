@@ -11,6 +11,7 @@ from app.schemas.catalog import CatalogProduct
 
 AgentIntentSource = Literal["deterministic", "openrouter", "deterministic_fallback"]
 AgentDecisionSource = AgentIntentSource
+AgentIntentMode = Literal["RECOMMEND", "BUY", "OTHER"]
 ProposalBlocker = Literal["AUTH_REQUIRED", "PAYMENT_NOT_CONFIGURED", "STALE"]
 AgentOutcome = Literal[
     "RECOMMENDATIONS",
@@ -66,6 +67,12 @@ class ShoppingIntent(BaseModel):
             if preference and preference not in normalized:
                 normalized.append(preference[:40])
         return normalized
+
+
+class ParsedShoppingIntent(ShoppingIntent):
+    """Provider output combining product requirements with conversational intent mode."""
+
+    intent_mode: AgentIntentMode
 
 
 class AgentRuntimeControls(BaseModel):
@@ -198,7 +205,7 @@ class AgentChatResponse(BaseModel):
     cross_sell_consent_required: bool = False
     replan_count: int = Field(default=0, ge=0, le=3)
     remaining_replans: int = Field(default=3, ge=0, le=3)
-    intent_mode: Literal["RECOMMEND", "BUY"] = "RECOMMEND"
+    intent_mode: AgentIntentMode = "RECOMMEND"
 
 
 class AgentConversationCreateRequest(BaseModel):

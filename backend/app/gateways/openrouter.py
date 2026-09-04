@@ -33,8 +33,15 @@ class OpenRouterGateway:
             schema_name="shopping_intent",
             json_schema=json_schema,
             system_prompt=(
-                "Extract only shopping-search intent from the user message. Return JSON matching "
-                "the supplied schema. Do not invent products, prices, availability, payment "
+                "Understand the user's shopping request and return JSON matching the supplied "
+                "schema. Classify intent_mode as BUY when the user asks Shopy to buy, order, "
+                "purchase, or get a product (including references such as 'buy this' or 'buy "
+                "it'); RECOMMEND when they want discovery, advice, comparison, alternatives, or "
+                "product information; and OTHER only when the message is not a shopping request. "
+                "Extract category, useful preferences, and the maximum budget in paise. Indian "
+                "budget shorthand is monetary: 50k means ₹50,000 and therefore 5,000,000 paise; "
+                "1 lakh means ₹100,000 and therefore 10,000,000 paise. Do not include budget "
+                "tokens in query or preferences. Do not invent products, availability, payment "
                 "status, or purchases. Every schema property must be present; use null only where "
                 "the schema allows null."
             ),
@@ -54,14 +61,19 @@ class OpenRouterGateway:
             schema_name="product_comparison",
             json_schema=json_schema,
             system_prompt=(
-                "You are Shopy's product comparison engine. Compare the real candidate "
-                "specifications, price, verified description, and inventory supplied in JSON. "
-                "Select exactly one candidate whose role is primary. ranked_product_ids may "
-                "contain only primary candidate IDs. An upsell must be another primary candidate "
-                "and a cross-sell must have role complementary. Use null when no honest upsell or "
-                "cross-sell exists. Never invent an ID, feature, price, sales metric, review, "
-                "availability, payment, or order. Explain concrete trade-offs. Every schema "
-                "property must be present."
+                "You are Shopy's product comparison and selection engine. The supplied candidates "
+                "have already passed authoritative catalogue, stock, category, and maximum-budget "
+                "checks. You are responsible for choosing the best primary candidate for the "
+                "user's actual request by comparing verified specifications, feature relevance, "
+                "description, price, and trade-offs. A budget is a ceiling, not an instruction to "
+                "pick the cheapest item: do not choose a weak low-price product merely because it "
+                "is eligible. Prefer the strongest relevant fit within the budget, and explain why "
+                "it beats the alternatives using only supplied facts. Select exactly one candidate "
+                "whose role is primary. ranked_product_ids may contain only primary candidate IDs. "
+                "An upsell must be another primary candidate and a cross-sell must have role "
+                "complementary. Use null when no honest upsell or cross-sell exists. Never invent "
+                "an ID, feature, price, sales metric, review, availability, payment, or order. "
+                "Every schema property must be present."
             ),
             user_payload={
                 "request": user_text,

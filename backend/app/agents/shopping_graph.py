@@ -18,10 +18,12 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentDecisionSource,
+    AgentIntentMode,
     AgentIntentSource,
     AgentProductDecision,
     AgentRecommendation,
     AgentRuntimeControls,
+    ParsedShoppingIntent,
     ProductComparisonDecision,
     ShoppingIntent,
 )
@@ -30,7 +32,7 @@ from app.schemas.catalog import CatalogProduct
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 _PRICE_PATTERN = re.compile(
     r"(?:under|below|less\s+than|within|up\s+to|max(?:imum)?(?:\s+of)?|budget(?:\s+of)?)"
-    r"\s*(?:₹|rs\.?|inr)?\s*([\d][\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?",
+    r"\s*(?:₹|rs\.?|inr)?\s*([\d][\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?\b",
     re.IGNORECASE,
 )
 _CATEGORY_ALIASES: dict[ProductCategory, frozenset[str]] = {
@@ -85,6 +87,7 @@ _STOP_WORDS = frozenset(
 class ShoppingGraphState(TypedDict, total=False):
     request: AgentChatRequest
     intent: ShoppingIntent
+    intent_mode: AgentIntentMode
     intent_source: AgentIntentSource
     allowed_categories: list[ProductCategory]
     effective_limit: int
@@ -151,38 +154,54 @@ class ShoppingGraph:
 
     async def _parse_intent(self, state: ShoppingGraphState) -> ShoppingGraphState:
         request = state["request"]
-        deterministic_intent = _merge_previous_intent(
-            _parse_deterministic_intent(request), self._previous_intent
-        )
+        current_intent = _parse_deterministic_intent(request)
+        deterministic_intent = _merge_previous_intent(current_intent, self._previous_intent)
+        fallback_mode = _fallback_intent_mode(request.message)
         if self._llm_gateway is None:
             return ShoppingGraphState(
                 intent=deterministic_intent,
+                intent_mode=fallback_mode,
                 intent_source="deterministic",
             )
 
         try:
             raw_intent = await self._llm_gateway.parse_structured_intent(
                 user_text=request.message,
-                json_schema=ShoppingIntent.model_json_schema(),
+                json_schema=ParsedShoppingIntent.model_json_schema(),
             )
-            provider_intent = ShoppingIntent.model_validate(raw_intent)
+            parsed_intent = ParsedShoppingIntent.model_validate(raw_intent)
         except (LLMProviderError, ValidationError):
             return ShoppingGraphState(
                 intent=deterministic_intent,
+                intent_mode=fallback_mode,
                 intent_source="deterministic_fallback",
             )
 
+        provider_ceiling = parsed_intent.max_price_paise
+        current_ceiling = current_intent.max_price_paise
+        max_price_paise = request.max_price_paise or provider_ceiling or deterministic_intent.max_price_paise
+        # A locally recognized explicit ceiling is only a hard overspend guard. The
+        # model remains responsible for understanding the request and comparing products.
+        if current_ceiling is not None and (
+            max_price_paise is None or max_price_paise > current_ceiling
+        ):
+            max_price_paise = current_ceiling
         intent = ShoppingIntent(
-            query=provider_intent.query or deterministic_intent.query,
-            category=request.category or provider_intent.category or deterministic_intent.category,
-            max_price_paise=(
-                request.max_price_paise
-                or provider_intent.max_price_paise
-                or deterministic_intent.max_price_paise
+            query=parsed_intent.query or deterministic_intent.query,
+            category=(
+                request.category
+                or parsed_intent.category
+                or current_intent.category
+                or deterministic_intent.category
             ),
-            preferences=provider_intent.preferences or deterministic_intent.preferences,
+            max_price_paise=max_price_paise,
+            preferences=parsed_intent.preferences or deterministic_intent.preferences,
         )
-        return ShoppingGraphState(intent=intent, intent_source="openrouter")
+        return ShoppingGraphState(
+            intent=intent,
+            intent_mode=parsed_intent.intent_mode,
+            intent_source="openrouter",
+        )
 
     def _apply_controls(self, state: ShoppingGraphState) -> ShoppingGraphState:
         request = state["request"]
@@ -230,6 +249,8 @@ class ShoppingGraph:
         )
 
     async def _search_catalog(self, state: ShoppingGraphState) -> ShoppingGraphState:
+        if state.get("intent_mode") == "OTHER":
+            return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
         if state.get("blocked_reason"):
             return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
         intent = state["intent"]
@@ -274,13 +295,7 @@ class ShoppingGraph:
             _score_candidate(product, intent, preference_tokens)
             for product in state.get("candidates", [])
         ]
-        ranked.sort(
-            key=lambda recommendation: (
-                -recommendation.score,
-                recommendation.product.offer_price_paise,
-                recommendation.product.title.casefold(),
-            )
-        )
+        ranked.sort(key=lambda recommendation: _recommendation_sort_key(recommendation, intent))
         shortlist = ranked[:8]
         return ShoppingGraphState(
             shortlist=shortlist,
@@ -320,13 +335,7 @@ class ShoppingGraph:
             )
             for product in products
         ]
-        ranked.sort(
-            key=lambda recommendation: (
-                -recommendation.score,
-                recommendation.product.offer_price_paise,
-                recommendation.product.title.casefold(),
-            )
-        )
+        ranked.sort(key=lambda recommendation: _recommendation_sort_key(recommendation, intent))
         return ShoppingGraphState(complementary_candidates=ranked[:5])
 
     async def _compare_products(self, state: ShoppingGraphState) -> ShoppingGraphState:
@@ -441,8 +450,14 @@ class ShoppingGraph:
                     decision.cross_sell_reason or "A complementary eligible product",
                 )
 
+        intent_mode = state.get("intent_mode", "RECOMMEND")
         blocked_reason = state.get("blocked_reason")
-        if blocked_reason:
+        if intent_mode == "OTHER":
+            reply = (
+                "I can help you discover, compare, or buy products from the Shopy catalogue. "
+                "Tell me what you want and any budget or features that matter."
+            )
+        elif blocked_reason:
             reply = blocked_reason
         elif winner is not None and decision is not None and self._exact_match:
             reply = (
@@ -474,6 +489,7 @@ class ShoppingGraph:
             response=AgentChatResponse(
                 reply=reply,
                 intent_source=intent_source,
+                intent_mode=intent_mode,
                 decision_source=decision.decision_source if decision else None,
                 intent=intent,
                 recommendations=recommendations,
@@ -604,6 +620,29 @@ def _with_decision_reason(
     return recommendation.model_copy(update={"reasons": reasons[:6]})
 
 
+def _fallback_intent_mode(message: str) -> AgentIntentMode:
+    normalized = " ".join(message.casefold().split())
+    buy_phrases = (
+        "buy me",
+        "order me",
+        "get me",
+        "buy this",
+        "buy it",
+        "order this",
+        "order it",
+        "purchase this",
+        "purchase it",
+        "place an order",
+        "i want to buy",
+        "can you buy",
+    )
+    if normalized.startswith(("buy ", "order ", "purchase ")) or any(
+        phrase in normalized for phrase in buy_phrases
+    ):
+        return "BUY"
+    return "RECOMMEND"
+
+
 def _merge_previous_intent(
     current: ShoppingIntent,
     previous: ShoppingIntent | None,
@@ -661,12 +700,24 @@ def _extract_max_price_paise(text: str) -> int | None:
 
 def _preference_tokens(text: str) -> list[str]:
     tokens: list[str] = []
-    for token in _TOKEN_PATTERN.findall(text.casefold()):
+    without_price = _PRICE_PATTERN.sub(" ", text.casefold())
+    for token in _TOKEN_PATTERN.findall(without_price):
         if token in _STOP_WORDS or token.isdigit() or len(token) < 2:
             continue
         if token not in tokens:
             tokens.append(token)
     return tokens[:12]
+
+
+def _recommendation_sort_key(
+    recommendation: AgentRecommendation,
+    intent: ShoppingIntent,
+) -> tuple[int, int, str]:
+    price = recommendation.product.offer_price_paise
+    # The ceiling is a hard constraint. Among equally relevant products, prefer
+    # the strongest available use of that budget instead of the cheapest item.
+    price_order = intent.max_price_paise - price if intent.max_price_paise is not None else price
+    return (-recommendation.score, price_order, recommendation.product.title.casefold())
 
 
 def _score_candidate(
@@ -698,10 +749,8 @@ def _score_candidate(
 
     if product.mrp_paise is not None and product.mrp_paise > product.offer_price_paise:
         discount = round((1 - product.offer_price_paise / product.mrp_paise) * 100)
-        score += min(7, max(1, discount // 5))
         reasons.append(f"{discount}% below listed MRP")
 
-    score += min(3, product.inventory_quantity)
     reasons.append(f"In stock: {product.inventory_quantity} available")
     if not matched and intent.category is None:
         reasons.insert(0, "Eligible active catalogue match")

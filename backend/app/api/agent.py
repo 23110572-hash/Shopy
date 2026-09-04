@@ -287,7 +287,7 @@ async def chat_with_agent(
                 controls=runtime_controls,
                 cross_sell_allowed=request.cross_sell_consent is True,
             ).chat(request)
-            response = response.model_copy(update={"intent_mode": intent_mode})
+            intent_mode = response.intent_mode
             if principal is None and response.winner is not None:
                 return response.model_copy(
                     update={
@@ -350,6 +350,7 @@ async def chat_with_agent(
                 exact_match=plan.exact_match,
                 cross_sell_allowed=plan.cross_sell_allowed,
             ).chat(request)
+            intent_mode = agent_response.intent_mode
 
         if plan.replan_increment:
             conversation.replan_count += 1
