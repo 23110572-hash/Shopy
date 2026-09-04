@@ -18,7 +18,7 @@ interface BrowserSpeechRecognition {
   onresult: ((event: BrowserSpeechResultEvent) => void) | null
   onerror: ((event: BrowserSpeechErrorEvent) => void) | null
   onend: (() => void) | null
-  start: () => void
+  start: (audioTrack?: MediaStreamTrack) => void
   stop: () => void
   abort: () => void
 }
@@ -51,14 +51,23 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
   const [error, setError] = useState<string | null>(null)
   const [proposal, setProposal] = useState<PurchaseProposal | null>(null)
   const [listening, setListening] = useState(false)
+  const [requestingMic, setRequestingMic] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const speechRef = useRef<BrowserSpeechRecognition | null>(null)
   const speechAttemptRef = useRef(0)
+  const microphoneStreamRef = useRef<MediaStream | null>(null)
   const microphonePermissionRef = useRef<MicrophonePermissionState>('unknown')
 
   function focusComposer() {
     window.requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  function releaseMicrophoneStream() {
+    const stream = microphoneStreamRef.current
+    if (!stream) return
+    stream.getTracks().forEach((track) => track.stop())
+    microphoneStreamRef.current = null
   }
 
   function stopSpeechRecognition() {
@@ -71,7 +80,9 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       recognition.abort()
       speechRef.current = null
     }
+    releaseMicrophoneStream()
     setListening(false)
+    setRequestingMic(false)
   }
 
   function resetVisibleSession() {
@@ -190,10 +201,12 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     }
   }
 
-  function startSpeechRecognition(SpeechRecognition: BrowserSpeechRecognitionConstructor) {
+  function startSpeechRecognition(
+    SpeechRecognition: BrowserSpeechRecognitionConstructor,
+    attempt: number,
+    audioTrack: MediaStreamTrack,
+  ) {
     const recognition = new SpeechRecognition()
-    const attempt = speechAttemptRef.current + 1
-    speechAttemptRef.current = attempt
     let submitted = false
     recognition.lang = 'en-IN'
     recognition.continuous = false
@@ -214,6 +227,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       if (speechAttemptRef.current !== attempt || speechRef.current !== recognition) return
       setListening(false)
       speechRef.current = null
+      releaseMicrophoneStream()
       if (event.error === 'aborted') return
       if (event.error === 'not-allowed') {
         void readMicrophonePermission().then((permission) => {
@@ -227,11 +241,17 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       if (speechAttemptRef.current !== attempt || speechRef.current !== recognition) return
       setListening(false)
       speechRef.current = null
+      releaseMicrophoneStream()
     }
     speechRef.current = recognition
     setError(null)
     try {
-      recognition.start()
+      try {
+        recognition.start(audioTrack)
+      } catch (reason) {
+        if (!(reason instanceof TypeError)) throw reason
+        recognition.start()
+      }
       setListening(true)
     } catch {
       if (speechAttemptRef.current === attempt && speechRef.current === recognition) {
@@ -239,9 +259,56 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
         recognition.onerror = null
         recognition.onend = null
         speechRef.current = null
+        releaseMicrophoneStream()
         setListening(false)
-        setError('The microphone could not be started. Try again in Chrome or Edge, or type your message.')
+        setError('The browser could not start speech recognition from the microphone. Try again in the latest Chrome, or type your message.')
       }
+    }
+  }
+
+  async function requestMicrophoneAndStart(SpeechRecognition: BrowserSpeechRecognitionConstructor) {
+    const attempt = speechAttemptRef.current + 1
+    speechAttemptRef.current = attempt
+    setRequestingMic(true)
+    setError(null)
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      if (speechAttemptRef.current !== attempt) {
+        stream.getTracks().forEach((track) => track.stop())
+        return
+      }
+      const audioTrack = stream.getAudioTracks()[0]
+      if (!audioTrack) {
+        stream.getTracks().forEach((track) => track.stop())
+        setError('Chrome opened the microphone but did not provide an audio track. Check the selected input device.')
+        return
+      }
+      releaseMicrophoneStream()
+      microphoneStreamRef.current = stream
+      microphonePermissionRef.current = 'granted'
+      setRequestingMic(false)
+      startSpeechRecognition(SpeechRecognition, attempt, audioTrack)
+    } catch (reason) {
+      if (speechAttemptRef.current !== attempt) return
+      if (reason instanceof DOMException && (reason.name === 'NotAllowedError' || reason.name === 'SecurityError')) {
+        const permission = await readMicrophonePermission()
+        if (speechAttemptRef.current !== attempt) return
+        if (permission === 'granted') {
+          setError('Chrome reports that this site is allowed, but Windows or browser policy refused microphone capture. Check Windows Settings → Privacy & security → Microphone and allow desktop apps.')
+        } else if (permission === 'denied') {
+          setError(`Chrome denied microphone capture for ${window.location.origin}. Remove this site from Chrome's blocked microphone list, reload the page, and allow the new prompt.`)
+        } else {
+          setError('Chrome did not allow microphone capture. Reload the page and allow the microphone prompt.')
+        }
+      } else if (reason instanceof DOMException && reason.name === 'NotFoundError') {
+        setError('Chrome could not find a microphone. Select a working input device in Chrome settings.')
+      } else if (reason instanceof DOMException && reason.name === 'NotReadableError') {
+        setError('Chrome found the microphone but could not open it. Close other apps using the microphone and try again.')
+      } else {
+        setError('Chrome could not open the microphone. Check the selected input device and try again.')
+      }
+    } finally {
+      if (speechAttemptRef.current === attempt) setRequestingMic(false)
     }
   }
 
@@ -250,8 +317,13 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       speechRef.current.stop()
       return
     }
+    if (requestingMic) return
     if (!window.isSecureContext) {
       setError('Microphone access requires HTTPS or localhost.')
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('This browser cannot request microphone audio. Try the latest Chrome or Edge.')
       return
     }
     const speechWindow = window as SpeechCapableWindow
@@ -260,7 +332,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       setError('Speech recognition is not supported in this browser. Try the latest Chrome or Edge.')
       return
     }
-    startSpeechRecognition(SpeechRecognition)
+    void requestMicrophoneAndStart(SpeechRecognition)
   }
 
   function chooseSuggestion(value: string) {
@@ -284,7 +356,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1></div><button className="agent-new-button" type="button" onClick={newConversation} disabled={busy}>+ New session</button></header>
       <div className="agent-layout">
         <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent} disabled={busy}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)} disabled={busy}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
-        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => chooseSuggestion('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => chooseSuggestion('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{proposal ? <div className="agent-inline-checkout"><AgentCheckout key={proposal.proposal_id} proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></div> : null}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy} aria-label={listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
+        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => chooseSuggestion('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => chooseSuggestion('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{proposal ? <div className="agent-inline-checkout"><AgentCheckout key={proposal.proposal_id} proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></div> : null}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}${requestingMic ? ' requesting' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy || requestingMic} aria-label={requestingMic ? 'Requesting microphone access' : listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
       </div>
     </main>
   </div>
