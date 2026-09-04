@@ -57,7 +57,7 @@ export default function AgentCheckout({ proposal, signedIn, onSignIn, onRunChang
   if (!signedIn) return <div className="agent-checkout-gate"><p>Sign in to choose an address and confirm this governed Razorpay purchase.</p><button type="button" onClick={onSignIn}>Sign in to continue</button></div>
   const captured = status?.state === 'CAPTURED'
   return <section className="agent-checkout-card">
-    <div className="agent-panel-title"><span>Buy with Agent</span><b>Razorpay only</b></div>
+    <div className="agent-panel-title"><span>Delivery & payment</span><b>Razorpay only</b></div>
     <h3>{proposal.product.title}</h3><strong className="agent-price">{money(proposal.amount_paise)}</strong>
     <div className="policy-list">{proposal.policy_checks?.map((check) => <p key={check.code} className={check.outcome === 'ALLOWED' ? 'allowed' : 'blocked'}><b>{check.outcome === 'ALLOWED' ? '✓' : '!'}</b><span>{check.explanation}</span></p>)}</div>
     {captured ? <div className="agent-payment-success"><strong>Payment captured</strong><p>{status.message}</p><small>{status.fulfillment_order_number ?? status.order_id}</small></div> : <>

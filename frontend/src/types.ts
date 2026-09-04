@@ -204,6 +204,7 @@ export interface AgentChatResponse {
   cross_sell_consent_required?: boolean
   replan_count?: number
   remaining_replans?: number
+  intent_mode: 'RECOMMEND' | 'BUY'
 }
 
 export type ConversationStatus = 'ACTIVE' | 'CLOSED'

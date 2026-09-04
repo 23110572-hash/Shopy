@@ -88,6 +88,40 @@ def _turn_response(turn: AgentConversationTurn) -> AgentConversationTurnResponse
     )
 
 
+def _intent_mode(message: str) -> str | None:
+    normalized = " ".join(message.casefold().split())
+    direct_buy_phrases = (
+        "buy me",
+        "order me",
+        "get me",
+        "buy this",
+        "buy it",
+        "order this",
+        "order it",
+        "purchase this",
+        "purchase it",
+        "place an order",
+        "i want to buy",
+        "can you buy",
+    )
+    if normalized.startswith(("buy ", "order ", "purchase ")) or any(
+        phrase in normalized for phrase in direct_buy_phrases
+    ):
+        return "BUY"
+    recommendation_phrases = (
+        "recommend",
+        "suggest",
+        "compare",
+        "show me",
+        "find me",
+        "which one",
+        "which product",
+    )
+    if any(phrase in normalized for phrase in recommendation_phrases):
+        return "RECOMMEND"
+    return None
+
+
 def _not_found() -> NoReturn:
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
 
@@ -167,6 +201,7 @@ async def chat_with_agent(
     llm_gateway: LLMGateway | None = (
         OpenRouterGateway(settings) if settings.openrouter_configured else None
     )
+    explicit_intent_mode = _intent_mode(request.message)
     async with database.session() as session:
         products = ProductRepository(session)
         saved_controls: ShoppingAgentControls | None = None
@@ -211,6 +246,17 @@ async def chat_with_agent(
             if duplicate is not None:
                 return AgentChatResponse.model_validate(duplicate.response_payload)
 
+        intent_mode = explicit_intent_mode
+        if intent_mode is None and conversation is not None:
+            previous_mode = conversation.context.get("intent_mode")
+            continuing_selection = (
+                request.selected_product_id is not None
+                or bool(conversation.context.get("pending_option_ids"))
+            )
+            if previous_mode == "BUY" and continuing_selection:
+                intent_mode = "BUY"
+        intent_mode = intent_mode or "RECOMMEND"
+
         if conversation is None:
             response = await ShoppingGraph(
                 products,
@@ -218,9 +264,16 @@ async def chat_with_agent(
                 controls=runtime_controls,
                 cross_sell_allowed=request.cross_sell_consent is True,
             ).chat(request)
+            response = response.model_copy(update={"intent_mode": intent_mode})
             if principal is None and response.winner is not None:
                 return response.model_copy(
-                    update={"notice": "Sign in to buy this with Razorpay Test Mode."}
+                    update={
+                        "notice": (
+                            "Sign in to continue to address confirmation and Razorpay."
+                            if intent_mode == "BUY"
+                            else "Sign in when you want the Agent to buy a product."
+                        )
+                    }
                 )
             return response
 
@@ -296,6 +349,7 @@ async def chat_with_agent(
             and saved_controls is not None
             and agent_response.winner is not None
             and agent_response.outcome == "RECOMMENDATIONS"
+            and intent_mode == "BUY"
             and request.cross_sell_consent is None
         ):
             try:
@@ -345,6 +399,7 @@ async def chat_with_agent(
             )
         elif request.cross_sell_consent is True:
             next_context["cross_sell_declined"] = False
+        next_context["intent_mode"] = intent_mode
         conversation.context = next_context
         conversation.turn_count += 1
         conversation.last_message_preview = request.message[:240]
@@ -357,6 +412,7 @@ async def chat_with_agent(
                 "turn_id": turn.id,
                 "replan_count": conversation.replan_count,
                 "remaining_replans": 3 - conversation.replan_count,
+                "intent_mode": intent_mode,
             }
         )
         turn.assistant_reply = agent_response.reply

@@ -198,6 +198,7 @@ class AgentChatResponse(BaseModel):
     cross_sell_consent_required: bool = False
     replan_count: int = Field(default=0, ge=0, le=3)
     remaining_replans: int = Field(default=3, ge=0, le=3)
+    intent_mode: Literal["RECOMMEND", "BUY"] = "RECOMMEND"
 
 
 class AgentConversationCreateRequest(BaseModel):

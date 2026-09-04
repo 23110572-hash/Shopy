@@ -634,7 +634,7 @@ function App() {
     <div className="app-shell">
       <Navigation page={page} cartCount={cartCount} online={health?.database === 'ready'} onNavigate={navigate} />
       {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => navigate('agent')} /> : null}
-      {page === 'agent' ? <AgentWorkspace profile={profile} sessionChecked={sessionChecked} onSignIn={() => navigate('profile')} onAddToCart={addToCart} /> : null}
+      {page === 'agent' ? <AgentWorkspace profile={profile} sessionChecked={sessionChecked} onSignIn={() => navigate('profile')} /> : null}
       {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} signedIn={profile !== null} sessionChecked={sessionChecked} /> : null}
       {page === 'profile' ? <AccountCenter health={health} onSession={setProfile} /> : null}
       <footer className="site-footer">
