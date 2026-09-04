@@ -38,6 +38,16 @@ class PurchaseRun(TimestampMixin, Base):
     merchant_id: Mapped[UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("merchants.id", ondelete="RESTRICT"), nullable=False
     )
+    conversation_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("agent_conversations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    conversation_turn_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("agent_conversation_turns.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     idempotency_key: Mapped[str] = mapped_column(
         String(128), nullable=False, unique=True, index=True
     )

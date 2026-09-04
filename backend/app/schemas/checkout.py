@@ -1,10 +1,12 @@
 """Typed contracts for genuine Razorpay Standard Checkout orchestration."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.orders import ShippingAddressSnapshot
 
 CheckoutAction = Literal["CREATE_ORDER", "OPEN_CHECKOUT", "RECONCILE"]
 
@@ -17,11 +19,17 @@ class CreateCheckoutRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     proposal_id: UUID
+    address_id: UUID
 
 
 class CheckoutSessionResponse(BaseModel):
     run_id: UUID
     proposal_id: UUID
+    fulfillment_order_id: UUID
+    fulfillment_order_number: str
+    fulfillment_status: str
+    shipping_address: ShippingAddressSnapshot
+    policy_snapshot: dict[str, Any]
     key_id: str
     order_id: str
     amount_paise: int = Field(gt=0)
@@ -30,6 +38,7 @@ class CheckoutSessionResponse(BaseModel):
     description: str
     prefill_name: str
     prefill_email: str
+    prefill_contact: str
     state: Literal["ORDER_CREATED"] = "ORDER_CREATED"
     expires_at: datetime
     test_mode: Literal[True] = True
@@ -70,6 +79,11 @@ class PurchaseRunStatusResponse(BaseModel):
     updated_at: datetime
     retry_after_ms: int | None = Field(default=None, ge=0)
     message: str
+    fulfillment_order_id: UUID | None = None
+    fulfillment_order_number: str | None = None
+    fulfillment_status: str | None = None
+    shipping_address: ShippingAddressSnapshot | None = None
+    policy_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 class RazorpayWebhookResponse(BaseModel):

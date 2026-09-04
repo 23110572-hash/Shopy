@@ -11,6 +11,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.agent_order import AgentFulfillmentOrder
 from app.models.commerce import (
     AuditEntry,
     PaymentAttempt,
@@ -41,6 +42,20 @@ class CommerceRepository:
         statement = select(PurchaseRun).where(PurchaseRun.id == run_id)
         if buyer_user_id is not None:
             statement = statement.where(PurchaseRun.buyer_user_id == buyer_user_id)
+        if for_update:
+            statement = statement.with_for_update()
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
+    async def get_fulfillment_for_run(
+        self,
+        run_id: UUID,
+        *,
+        for_update: bool = False,
+    ) -> AgentFulfillmentOrder | None:
+        statement = select(AgentFulfillmentOrder).where(
+            AgentFulfillmentOrder.purchase_run_id == run_id
+        )
         if for_update:
             statement = statement.with_for_update()
         result = await self._session.execute(statement)

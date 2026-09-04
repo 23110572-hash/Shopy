@@ -75,6 +75,27 @@ class ProductRepository:
         )
         return result.scalar_one_or_none()
 
+    async def list_identity_candidates(self, *, limit: int = 200) -> Sequence[Product]:
+        """Return bounded active catalogue identities for deterministic name resolution."""
+        result = await self._session.execute(
+            select(Product)
+            .where(Product.is_active.is_(True))
+            .order_by(Product.brand, Product.model, Product.sku)
+            .limit(limit)
+        )
+        return result.scalars().all()
+
+    async def get_active_many(self, product_ids: Sequence[UUID]) -> Sequence[Product]:
+        if not product_ids:
+            return []
+        result = await self._session.execute(
+            select(Product).where(
+                Product.id.in_(product_ids),
+                Product.is_active.is_(True),
+            )
+        )
+        return result.scalars().all()
+
     async def search_agent_candidates(
         self,
         *,
@@ -82,6 +103,7 @@ class ProductRepository:
         allowed_categories: Sequence[ProductCategory] | None,
         max_price_paise: int | None,
         limit: int,
+        exclude_product_ids: Sequence[UUID] | None = None,
     ) -> Sequence[Product]:
         """Return only active, in-stock products that satisfy hard agent constraints."""
         filters: list[ColumnElement[bool]] = [
@@ -94,6 +116,8 @@ class ProductRepository:
             filters.append(Product.category.in_(allowed_categories))
         if max_price_paise is not None:
             filters.append(Product.offer_price_paise <= max_price_paise)
+        if exclude_product_ids:
+            filters.append(Product.id.not_in(exclude_product_ids))
 
         result = await self._session.execute(
             select(Product)

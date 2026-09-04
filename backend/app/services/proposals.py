@@ -17,6 +17,7 @@ from app.repositories.products import ProductRepository
 from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
+    AgentPolicyCheck,
     ProposalHardLimits,
     PurchaseProposal,
 )
@@ -37,6 +38,8 @@ async def persist_purchase_proposal(
     request: AgentChatRequest,
     response: AgentChatResponse,
     controls: ShoppingAgentControls,
+    conversation_id: UUID | None = None,
+    conversation_turn_id: UUID | None = None,
 ) -> PurchaseProposal | None:
     winner = response.winner
     decision = response.decision
@@ -70,6 +73,8 @@ async def persist_purchase_proposal(
         id=run_id,
         buyer_user_id=buyer_user_id,
         merchant_id=product.merchant_id,
+        conversation_id=conversation_id,
+        conversation_turn_id=conversation_turn_id,
         idempotency_key=f"proposal:{run_id.hex}",
         request_hash=request_hash,
         command=request.message,
@@ -196,6 +201,25 @@ async def persist_purchase_proposal(
             daily_spend_limit_paise=controls.daily_spend_limit_paise,
             monthly_spend_limit_paise=controls.monthly_spend_limit_paise,
         ),
+        policy_checks=[
+            AgentPolicyCheck(
+                code="CATEGORY_ALLOWED",
+                outcome="ALLOWED",
+                explanation=f"{product.category.value.title()} is allowed by the current agent policy.",
+            ),
+            AgentPolicyCheck(
+                code="PRICE_WITHIN_LIMIT",
+                outcome="ALLOWED",
+                explanation="The quoted price is within the current recommendation and per-purchase limits.",
+                observed_paise=product.offer_price_paise,
+                limit_paise=response.intent.max_price_paise,
+            ),
+            AgentPolicyCheck(
+                code="EXPLICIT_PAYMENT_CONFIRMATION",
+                outcome="ALLOWED",
+                explanation="The agent cannot pay by itself; the buyer must confirm in Razorpay.",
+            ),
+        ],
     )
 
 

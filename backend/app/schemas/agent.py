@@ -1,8 +1,8 @@
-"""Typed contracts for the Shopy catalogue and purchase-proposal agent."""
+"""Typed contracts for grounded, stateful shopping-agent interactions."""
 
 from datetime import datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -10,8 +10,16 @@ from app.models.product import ProductCategory
 from app.schemas.catalog import CatalogProduct
 
 AgentIntentSource = Literal["deterministic", "openrouter", "deterministic_fallback"]
-AgentDecisionSource = Literal["deterministic", "openrouter", "deterministic_fallback"]
+AgentDecisionSource = AgentIntentSource
 ProposalBlocker = Literal["AUTH_REQUIRED", "PAYMENT_NOT_CONFIGURED", "STALE"]
+AgentOutcome = Literal[
+    "RECOMMENDATIONS",
+    "CLARIFICATION",
+    "NO_MATCH",
+    "BLOCKED",
+    "CROSS_SELL_RESULTS",
+]
+ResolutionKind = Literal["EXACT_MATCH", "ALTERNATIVES", "CLARIFICATION_REQUIRED", "NO_MATCH"]
 
 
 class AgentChatRequest(BaseModel):
@@ -21,6 +29,11 @@ class AgentChatRequest(BaseModel):
     category: ProductCategory | None = None
     max_price_paise: int | None = Field(default=None, gt=0, le=1_000_000_000)
     limit: int = Field(default=4, ge=1, le=8)
+    conversation_id: UUID | None = None
+    client_turn_id: UUID = Field(default_factory=uuid4)
+    expected_conversation_version: int | None = Field(default=None, ge=1)
+    cross_sell_consent: bool | None = None
+    selected_product_id: UUID | None = None
 
     @field_validator("message")
     @classmethod
@@ -86,12 +99,7 @@ class ProductComparisonDecision(BaseModel):
     cross_sell_product_id: UUID | None
     cross_sell_reason: str | None = Field(max_length=500)
 
-    @field_validator(
-        "winner_reason",
-        "upsell_reason",
-        "cross_sell_reason",
-        mode="before",
-    )
+    @field_validator("winner_reason", "upsell_reason", "cross_sell_reason", mode="before")
     @classmethod
     def normalize_optional_text(cls, value: object) -> object:
         if value is None:
@@ -116,12 +124,31 @@ class AgentProductDecision(ProductComparisonDecision):
     decision_source: AgentDecisionSource
 
 
+class ClarificationOption(BaseModel):
+    product_id: UUID
+    label: str = Field(min_length=1, max_length=255)
+
+
+class AgentClarification(BaseModel):
+    kind: Literal["PRODUCT", "REFERENCE"] = "PRODUCT"
+    question: str = Field(min_length=1, max_length=500)
+    options: list[ClarificationOption] = Field(min_length=2, max_length=4)
+
+
 class ProposalHardLimits(BaseModel):
     requested_or_effective_ceiling_paise: int | None
     recommendation_ceiling_paise: int | None
     per_purchase_limit_paise: int | None
     daily_spend_limit_paise: int | None
     monthly_spend_limit_paise: int | None
+
+
+class AgentPolicyCheck(BaseModel):
+    code: str = Field(min_length=1, max_length=80)
+    outcome: Literal["ALLOWED", "BLOCKED"]
+    explanation: str = Field(min_length=1, max_length=500)
+    observed_paise: int | None = None
+    limit_paise: int | None = None
 
 
 class PurchaseProposal(BaseModel):
@@ -139,6 +166,7 @@ class PurchaseProposal(BaseModel):
     checkout_available: bool
     blocker: ProposalBlocker | None
     hard_limits: ProposalHardLimits
+    policy_checks: list[AgentPolicyCheck] = Field(default_factory=list)
 
 
 class AgentChatResponse(BaseModel):
@@ -156,5 +184,58 @@ class AgentChatResponse(BaseModel):
     account_controls_applied: bool = False
     catalogue_backed: Literal[True] = True
     checkout_available: bool = False
-    # Short, actionable note only. Empty when there is nothing useful to say.
     notice: str = ""
+    conversation_id: UUID | None = None
+    conversation_version: int | None = None
+    turn_id: UUID | None = None
+    outcome: AgentOutcome = "RECOMMENDATIONS"
+    resolution_kind: ResolutionKind = "ALTERNATIVES"
+    clarification: AgentClarification | None = None
+    focus_product_id: UUID | None = None
+    exact_match: bool = False
+    evaluated_count: int = Field(default=0, ge=0, le=100)
+    eligible_count: int = Field(default=0, ge=0, le=100)
+    cross_sell_consent_required: bool = False
+    replan_count: int = Field(default=0, ge=0, le=3)
+    remaining_replans: int = Field(default=3, ge=0, le=3)
+
+
+class AgentConversationCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(default="New conversation", min_length=1, max_length=160)
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        return " ".join(value.split())
+
+
+class AgentConversationSummary(BaseModel):
+    conversation_id: UUID
+    title: str
+    status: Literal["ACTIVE", "CLOSED"]
+    last_message_preview: str | None
+    turn_count: int = Field(ge=0)
+    replan_count: int = Field(ge=0, le=3)
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentConversationTurnResponse(BaseModel):
+    turn_id: UUID
+    sequence_number: int = Field(gt=0)
+    client_turn_id: UUID
+    user_message: str
+    assistant_reply: str
+    outcome: str
+    response: AgentChatResponse
+    created_at: datetime
+
+
+class AgentConversationDetail(AgentConversationSummary):
+    turns: list[AgentConversationTurnResponse] = Field(default_factory=list)
+
+
+class AgentConversationList(BaseModel):
+    items: list[AgentConversationSummary] = Field(default_factory=list)

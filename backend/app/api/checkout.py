@@ -128,6 +128,7 @@ async def create_checkout_order(
         return await _service(database, settings).create_order(
             buyer=principal.user,
             proposal_id=payload.proposal_id,
+            address_id=payload.address_id,
             idempotency_key=_normalize_idempotency_key(idempotency_key),
         )
     except CheckoutServiceError as error:

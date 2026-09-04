@@ -95,6 +95,8 @@ class ShoppingGraphState(TypedDict, total=False):
     complementary_candidates: list[AgentRecommendation]
     recommendations: list[AgentRecommendation]
     decision: AgentProductDecision
+    evaluated_count: int
+    eligible_count: int
     response: AgentChatResponse
 
 
@@ -106,10 +108,21 @@ class ShoppingGraph:
         repository: ProductRepository,
         llm_gateway: LLMGateway | None = None,
         controls: AgentRuntimeControls | None = None,
+        *,
+        forced_product_id: UUID | None = None,
+        excluded_product_ids: list[UUID] | None = None,
+        previous_intent: ShoppingIntent | None = None,
+        exact_match: bool = False,
+        cross_sell_allowed: bool = False,
     ) -> None:
         self._repository = repository
         self._llm_gateway = llm_gateway
         self._controls = controls
+        self._forced_product_id = forced_product_id
+        self._excluded_product_ids = excluded_product_ids or []
+        self._previous_intent = previous_intent
+        self._exact_match = exact_match
+        self._cross_sell_allowed = cross_sell_allowed
 
         builder = StateGraph(ShoppingGraphState)
         builder.add_node("parse_intent", self._parse_intent)
@@ -138,7 +151,9 @@ class ShoppingGraph:
 
     async def _parse_intent(self, state: ShoppingGraphState) -> ShoppingGraphState:
         request = state["request"]
-        deterministic_intent = _parse_deterministic_intent(request)
+        deterministic_intent = _merge_previous_intent(
+            _parse_deterministic_intent(request), self._previous_intent
+        )
         if self._llm_gateway is None:
             return ShoppingGraphState(
                 intent=deterministic_intent,
@@ -216,16 +231,40 @@ class ShoppingGraph:
 
     async def _search_catalog(self, state: ShoppingGraphState) -> ShoppingGraphState:
         if state.get("blocked_reason"):
-            return ShoppingGraphState(candidates=[])
+            return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
         intent = state["intent"]
+        if self._forced_product_id is not None:
+            product = await self._repository.get_active(self._forced_product_id)
+            if product is None:
+                return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
+            allowed = state.get("allowed_categories")
+            eligible = (
+                product.in_stock
+                and (not allowed or product.category in allowed)
+                and (
+                    intent.max_price_paise is None
+                    or product.offer_price_paise <= intent.max_price_paise
+                )
+                and product.id not in self._excluded_product_ids
+            )
+            candidates = [CatalogProduct.model_validate(product)] if eligible else []
+            return ShoppingGraphState(
+                candidates=candidates,
+                evaluated_count=1,
+                eligible_count=len(candidates),
+            )
         products = await self._repository.search_agent_candidates(
             category=intent.category,
             allowed_categories=state.get("allowed_categories"),
             max_price_paise=intent.max_price_paise,
             limit=100,
+            exclude_product_ids=self._excluded_product_ids,
         )
+        candidates = [CatalogProduct.model_validate(product) for product in products]
         return ShoppingGraphState(
-            candidates=[CatalogProduct.model_validate(product) for product in products]
+            candidates=candidates,
+            evaluated_count=len(candidates),
+            eligible_count=len(candidates),
         )
 
     def _rank_shortlist(self, state: ShoppingGraphState) -> ShoppingGraphState:
@@ -249,6 +288,8 @@ class ShoppingGraph:
         )
 
     async def _search_complements(self, state: ShoppingGraphState) -> ShoppingGraphState:
+        if not self._cross_sell_allowed:
+            return ShoppingGraphState(complementary_candidates=[])
         shortlist = state.get("shortlist", [])
         if not shortlist:
             return ShoppingGraphState(complementary_candidates=[])
@@ -294,7 +335,28 @@ class ShoppingGraph:
         if not primary:
             return ShoppingGraphState()
 
-        if self._llm_gateway is None:
+        if self._exact_match:
+            exact = primary[0]
+            decision = AgentProductDecision(
+                selected_product_id=exact.product.id,
+                ranked_product_ids=[item.product.id for item in primary],
+                winner_reason=(
+                    f"{exact.product.title} is the exact in-stock catalogue model requested."
+                ),
+                tradeoffs=[],
+                upsell_product_id=None,
+                upsell_reason=None,
+                cross_sell_product_id=(
+                    complementary[0].product.id if self._cross_sell_allowed and complementary else None
+                ),
+                cross_sell_reason=(
+                    "An optional product from another eligible category."
+                    if self._cross_sell_allowed and complementary
+                    else None
+                ),
+                decision_source="deterministic",
+            )
+        elif self._llm_gateway is None:
             decision = _fallback_decision(primary, complementary, source="deterministic")
         else:
             candidate_payload = [
@@ -364,16 +426,27 @@ class ShoppingGraph:
         blocked_reason = state.get("blocked_reason")
         if blocked_reason:
             reply = blocked_reason
+        elif winner is not None and decision is not None and self._exact_match:
+            reply = (
+                f"{winner.product.title} is the exact catalogue model you requested, "
+                "is in stock, and passed your current agent limits."
+            )
         elif winner is not None and decision is not None:
-            # Lead with the recommendation itself. The product cards below already
-            # carry the title and price, so the reply stays a plain explanation.
             reply = decision.winner_reason
         else:
             reply = (
-                "I could not find an in-stock product matching that. Try a different "
-                "category, feature, or budget."
+                "I could not find an in-stock product matching those requirements. "
+                "You can adjust the model, category, or budget."
             )
 
+        resolution_kind = (
+            "EXACT_MATCH"
+            if winner is not None and self._exact_match
+            else "ALTERNATIVES"
+            if winner is not None
+            else "NO_MATCH"
+        )
+        outcome = "BLOCKED" if blocked_reason else "RECOMMENDATIONS" if winner else "NO_MATCH"
         return ShoppingGraphState(
             response=AgentChatResponse(
                 reply=reply,
@@ -386,8 +459,16 @@ class ShoppingGraph:
                 upsell=upsell,
                 cross_sell=cross_sell,
                 account_controls_applied=controls_applied,
-                # The API layer fills in an actionable note when there is one.
                 notice="",
+                outcome=outcome,
+                resolution_kind=resolution_kind,
+                focus_product_id=winner.product.id if winner else None,
+                exact_match=winner is not None and self._exact_match,
+                evaluated_count=state.get("evaluated_count", 0),
+                eligible_count=state.get("eligible_count", 0),
+                cross_sell_consent_required=(
+                    winner is not None and not self._cross_sell_allowed
+                ),
             )
         )
 
@@ -497,6 +578,20 @@ def _with_decision_reason(
 ) -> AgentRecommendation:
     reasons = [reason, *recommendation.reasons]
     return recommendation.model_copy(update={"reasons": reasons[:6]})
+
+
+def _merge_previous_intent(
+    current: ShoppingIntent,
+    previous: ShoppingIntent | None,
+) -> ShoppingIntent:
+    if previous is None:
+        return current
+    return ShoppingIntent(
+        query=current.query or previous.query,
+        category=current.category or previous.category,
+        max_price_paise=current.max_price_paise or previous.max_price_paise,
+        preferences=current.preferences or previous.preferences,
+    )
 
 
 def _parse_deterministic_intent(request: AgentChatRequest) -> ShoppingIntent:

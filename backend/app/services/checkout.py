@@ -2,7 +2,7 @@
 
 import hmac
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -21,6 +21,7 @@ from app.gateways.razorpay import (
     RazorpayRejectedError,
     RazorpayStandardCheckoutGateway,
 )
+from app.models.agent_order import AgentFulfillmentOrder, AgentFulfillmentStatus
 from app.models.commerce import (
     PaymentAttempt,
     PaymentStatus,
@@ -33,10 +34,12 @@ from app.models.commerce import (
     WebhookProcessingStatus,
 )
 from app.models.merchant import Merchant
+from app.models.orders import DeliveryAddress
 from app.models.purchase_run import PurchaseRun
 from app.models.user import User
 from app.repositories.accounts import AccountRepository
 from app.repositories.commerce import CommerceRepository
+from app.repositories.orders import DeliveryAddressRepository
 from app.repositories.products import ProductRepository
 from app.schemas.checkout import (
     CheckoutCallbackRequest,
@@ -62,6 +65,12 @@ class PreparedCheckout:
     proposal_id: UUID
     order_record_id: UUID
     reservation_id: UUID
+    fulfillment_order_id: UUID
+    fulfillment_order_number: str
+    fulfillment_status: str
+    shipping_address: dict[str, Any]
+    policy_snapshot: dict[str, Any]
+    prefill_contact: str
     receipt: str
     amount_paise: int
     currency: str
@@ -81,6 +90,7 @@ class CheckoutService:
         *,
         buyer: User,
         proposal_id: UUID,
+        address_id: UUID,
         idempotency_key: str,
     ) -> CheckoutSessionResponse:
         if not self._settings.razorpay_api_configured:
@@ -92,6 +102,7 @@ class CheckoutService:
         prepared = await self._prepare_order(
             buyer=buyer,
             proposal_id=proposal_id,
+            address_id=address_id,
             idempotency_key=idempotency_key,
         )
         if prepared.provider_order_id is not None:
@@ -100,6 +111,7 @@ class CheckoutService:
         expected_notes = {
             "shopy_run_id": str(prepared.run_id),
             "shopy_proposal_id": str(prepared.proposal_id),
+            "shopy_fulfillment_id": str(prepared.fulfillment_order_id),
         }
         gateway = RazorpayStandardCheckoutGateway(self._settings)
         try:
@@ -170,12 +182,14 @@ class CheckoutService:
             order = await repository.get_order_for_run(run.id)
             payment = await repository.get_latest_payment_for_run(run.id)
             reservation = await repository.get_reservation_for_run(run.id)
+            fulfillment = await repository.get_fulfillment_for_run(run.id)
             return _status_response(
                 run=run,
                 quote=quote,
                 order=order,
                 payment=payment,
                 reservation=reservation,
+                fulfillment=fulfillment,
                 razorpay_api_configured=self._settings.razorpay_api_configured,
             )
 
@@ -398,6 +412,7 @@ class CheckoutService:
         *,
         buyer: User,
         proposal_id: UUID,
+        address_id: UUID,
         idempotency_key: str,
     ) -> PreparedCheckout:
         now = datetime.now(UTC)
@@ -423,9 +438,25 @@ class CheckoutService:
                 )
             existing_order = await repository.get_order_for_run(run.id, for_update=True)
             existing_reservation = await repository.get_reservation_for_run(run.id, for_update=True)
+            existing_fulfillment = await repository.get_fulfillment_for_run(
+                run.id,
+                for_update=True,
+            )
             merchant = await session.get(Merchant, quote.merchant_id)
             merchant_name = merchant.name if merchant is not None else "Shopy"
             if existing_order is not None:
+                if existing_fulfillment is None:
+                    raise CheckoutServiceError(
+                        "FULFILLMENT_STATE_MISSING",
+                        "The address-bound fulfilment record is missing for this provider operation.",
+                        status_code=500,
+                    )
+                if existing_fulfillment.delivery_address_id != address_id:
+                    raise CheckoutServiceError(
+                        "CHECKOUT_ADDRESS_MISMATCH",
+                        "This proposal was already bound to a different delivery address.",
+                        status_code=409,
+                    )
                 if (
                     existing_order.provider_order_id is not None
                     and existing_order.operation_state == ProviderOrderOperationState.CREATED.value
@@ -438,6 +469,7 @@ class CheckoutService:
                         quote,
                         existing_order,
                         existing_reservation,
+                        existing_fulfillment,
                         merchant_name,
                     )
                 raise CheckoutServiceError(
@@ -445,6 +477,12 @@ class CheckoutService:
                     "This proposal already has a provider operation. "
                     "Check or reconcile its status.",
                     status_code=409,
+                )
+            if existing_fulfillment is not None:
+                raise CheckoutServiceError(
+                    "FULFILLMENT_STATE_CONFLICT",
+                    "A fulfilment record exists without its provider operation.",
+                    status_code=500,
                 )
             if run.provider_write_started or run.state != PurchaseState.QUOTED:
                 raise CheckoutServiceError(
@@ -462,6 +500,18 @@ class CheckoutService:
                 )
                 raise CheckoutServiceError(
                     "QUOTE_EXPIRED", "The purchase quote expired", status_code=409
+                )
+
+            address = await DeliveryAddressRepository(session).get_owned(
+                address_id,
+                user_id=buyer.id,
+                for_update=True,
+            )
+            if address is None:
+                raise CheckoutServiceError(
+                    "ADDRESS_NOT_FOUND",
+                    "Choose a saved delivery address owned by this account.",
+                    status_code=404,
                 )
 
             product = await ProductRepository(session).get_for_checkout(quote.product_id)
@@ -533,6 +583,28 @@ class CheckoutService:
                 )
                 raise CheckoutServiceError("POLICY_DENIED", policy_reason, status_code=409)
 
+            shipping_address = _address_snapshot(address)
+            address_snapshot_hash = _canonical_hash(shipping_address)
+            policy_snapshot: dict[str, Any] = {
+                "controls_version": controls.version,
+                "agent_enabled": controls.agent_enabled,
+                "category": quote.category,
+                "category_allowlist": list(controls.category_allowlist),
+                "amount_paise": quote.total_amount_paise,
+                "currency": quote.currency,
+                "recommendation_ceiling_paise": controls.recommendation_price_ceiling_paise,
+                "per_purchase_limit_paise": controls.per_purchase_limit_paise,
+                "daily_spend_limit_paise": controls.daily_spend_limit_paise,
+                "monthly_spend_limit_paise": controls.monthly_spend_limit_paise,
+                "daily_captured_paise": daily_spend,
+                "monthly_captured_paise": monthly_spend,
+                "active_reserved_paise": active_reserved_spend,
+                "product_id": str(product.id),
+                "product_version": product.version,
+                "address_confirmed": True,
+                "payment_method": "RAZORPAY",
+            }
+
             run.state = ensure_transition(
                 run.state,
                 PurchaseState.QUOTE_VALIDATED,
@@ -561,11 +633,30 @@ class CheckoutService:
                 provider_write_started=False,
             )
 
+            fulfillment = AgentFulfillmentOrder(
+                order_number=_agent_order_number(run.id),
+                purchase_run_id=run.id,
+                quote_id=quote.id,
+                buyer_user_id=buyer.id,
+                delivery_address_id=address.id,
+                shipping_address=shipping_address,
+                amount_paise=quote.total_amount_paise,
+                currency=quote.currency,
+                payment_provider="razorpay",
+                status=AgentFulfillmentStatus.PENDING_PAYMENT.value,
+                policy_snapshot=policy_snapshot,
+            )
+            session.add(fulfillment)
+            await session.flush()
+
             receipt = f"shopy_{run.id.hex}"
             operation_hash = _canonical_hash(
                 {
                     "run_id": str(run.id),
                     "proposal_id": str(quote.id),
+                    "fulfillment_order_id": str(fulfillment.id),
+                    "address_id": str(address.id),
+                    "address_snapshot_hash": address_snapshot_hash,
                     "amount_paise": quote.total_amount_paise,
                     "currency": quote.currency,
                     "receipt": receipt,
@@ -583,6 +674,7 @@ class CheckoutService:
                 provider_notes={
                     "shopy_run_id": str(run.id),
                     "shopy_proposal_id": str(quote.id),
+                    "shopy_fulfillment_id": str(fulfillment.id),
                 },
             )
             session.add(order)
@@ -600,6 +692,11 @@ class CheckoutService:
                 details={
                     "quote_id": str(quote.id),
                     "product_id": str(product.id),
+                    "fulfillment_order_id": str(fulfillment.id),
+                    "fulfillment_order_number": fulfillment.order_number,
+                    "fulfillment_status": fulfillment.status,
+                    "delivery_address_id": str(address.id),
+                    "address_snapshot_hash": address_snapshot_hash,
                     "amount_paise": quote.total_amount_paise,
                     "currency": quote.currency,
                     "controls_version": controls.version,
@@ -608,6 +705,7 @@ class CheckoutService:
                     "active_reserved_paise": active_reserved_spend,
                     "approval_threshold_paise": controls.approval_required_above_paise,
                     "provider_write_claimed": True,
+                    "payment_method": "RAZORPAY",
                 },
                 signing_secret=_audit_secret(self._settings),
             )
@@ -617,6 +715,12 @@ class CheckoutService:
                 proposal_id=quote.id,
                 order_record_id=order.id,
                 reservation_id=reservation.id,
+                fulfillment_order_id=fulfillment.id,
+                fulfillment_order_number=fulfillment.order_number,
+                fulfillment_status=fulfillment.status,
+                shipping_address=shipping_address,
+                policy_snapshot=policy_snapshot,
+                prefill_contact=address.phone,
                 receipt=receipt,
                 amount_paise=quote.total_amount_paise,
                 currency=quote.currency,
@@ -679,16 +783,14 @@ class CheckoutService:
             repository = CommerceRepository(session)
             run = await repository.get_run(prepared.run_id, for_update=True)
             order = await repository.get_order_for_run(prepared.run_id, for_update=True)
-            if run is None or order is None:
+            fulfillment = await repository.get_fulfillment_for_run(prepared.run_id, for_update=True)
+            if run is None or order is None or fulfillment is None:
                 raise CheckoutServiceError(
                     "ORDER_STATE_MISSING",
-                    "Local Order state is missing after provider creation",
+                    "Local Order or fulfilment state is missing after provider creation",
                     status_code=500,
                 )
-            if (
-                order.provider_order_id is not None
-                and order.provider_order_id != provider_order.order_id
-            ):
+            if order.provider_order_id is not None and order.provider_order_id != provider_order.order_id:
                 raise CheckoutServiceError(
                     "DUPLICATE_PROVIDER_ORDER",
                     "A different provider Order is already attached to this run",
@@ -698,12 +800,10 @@ class CheckoutService:
             order.operation_state = ProviderOrderOperationState.CREATED.value
             order.provider_status = provider_order.status
             order.attempts = provider_order.attempts
+            fulfillment.status = AgentFulfillmentStatus.PENDING_PAYMENT.value
+            fulfillment.failure_reason = None
             if run.state in {PurchaseState.RESERVED, PurchaseState.PAYMENT_UNKNOWN}:
-                run.state = ensure_transition(
-                    run.state,
-                    PurchaseState.ORDER_CREATED,
-                    provider_write_started=True,
-                )
+                run.state = ensure_transition(run.state, PurchaseState.ORDER_CREATED, provider_write_started=True)
             await repository.append_audit(
                 run_id=run.id,
                 actor="RAZORPAY",
@@ -712,6 +812,8 @@ class CheckoutService:
                 explanation="Razorpay returned a matching test-mode Order.",
                 details={
                     "provider_order_id": provider_order.order_id,
+                    "fulfillment_order_id": str(fulfillment.id),
+                    "fulfillment_status": fulfillment.status,
                     "amount_paise": provider_order.amount_paise,
                     "currency": provider_order.currency,
                     "provider_status": provider_order.status,
@@ -719,17 +821,9 @@ class CheckoutService:
                 signing_secret=_audit_secret(self._settings),
             )
             await session.commit()
-        return PreparedCheckout(
-            run_id=prepared.run_id,
-            proposal_id=prepared.proposal_id,
-            order_record_id=prepared.order_record_id,
-            reservation_id=prepared.reservation_id,
-            receipt=prepared.receipt,
-            amount_paise=prepared.amount_paise,
-            currency=prepared.currency,
-            merchant_name=prepared.merchant_name,
-            description=prepared.description,
-            expires_at=prepared.expires_at,
+        return replace(
+            prepared,
+            fulfillment_status=AgentFulfillmentStatus.PENDING_PAYMENT.value,
             provider_order_id=provider_order.order_id,
         )
 
@@ -742,10 +836,17 @@ class CheckoutService:
             repository = CommerceRepository(session)
             run = await repository.get_run(prepared.run_id, for_update=True)
             order = await repository.get_order_for_run(prepared.run_id, for_update=True)
+            fulfillment = await repository.get_fulfillment_for_run(prepared.run_id, for_update=True)
             if run is None or order is None:
                 return
             order.operation_state = ProviderOrderOperationState.UNKNOWN.value
             order.provider_status = None
+            if fulfillment is not None and fulfillment.status not in {
+                AgentFulfillmentStatus.CONFIRMED.value,
+                AgentFulfillmentStatus.FULFILLMENT_REVIEW.value,
+            }:
+                fulfillment.status = AgentFulfillmentStatus.PAYMENT_UNKNOWN.value
+                fulfillment.failure_reason = explanation
             if run.state == PurchaseState.RESERVED:
                 run.state = ensure_transition(
                     run.state,
@@ -774,10 +875,17 @@ class CheckoutService:
             run = await repository.get_run(prepared.run_id, for_update=True)
             order = await repository.get_order_for_run(prepared.run_id, for_update=True)
             reservation = await repository.get_reservation_for_run(prepared.run_id, for_update=True)
+            fulfillment = await repository.get_fulfillment_for_run(prepared.run_id, for_update=True)
             if run is None or order is None:
                 return
             order.operation_state = ProviderOrderOperationState.UNKNOWN.value
             order.provider_status = None
+            if fulfillment is not None and fulfillment.status not in {
+                AgentFulfillmentStatus.CONFIRMED.value,
+                AgentFulfillmentStatus.FULFILLMENT_REVIEW.value,
+            }:
+                fulfillment.status = AgentFulfillmentStatus.PAYMENT_FAILED.value
+                fulfillment.failure_reason = provider_reason[:500]
             if reservation is not None and reservation.status == ReservationStatus.ACTIVE.value:
                 reservation.status = ReservationStatus.RELEASED.value
                 reservation.released_at = datetime.now(UTC)
@@ -840,7 +948,11 @@ class CheckoutService:
             )
             if run is None:
                 return
+            fulfillment = await repository.get_fulfillment_for_run(run.id, for_update=True)
             if run.state != PurchaseState.CAPTURED:
+                if fulfillment is not None:
+                    fulfillment.status = AgentFulfillmentStatus.PAYMENT_UNKNOWN.value
+                    fulfillment.failure_reason = explanation
                 if run.state == PurchaseState.ORDER_CREATED:
                     run.state = ensure_transition(
                         run.state,
@@ -886,6 +998,7 @@ class CheckoutService:
             order = order_result.scalar_one_or_none()
             quote = await repository.get_quote_for_run(run_id)
             reservation = await repository.get_reservation_for_run(run_id, for_update=True)
+            fulfillment = await repository.get_fulfillment_for_run(run_id, for_update=True)
             if run is None or order is None or quote is None:
                 raise CheckoutServiceError(
                     "PAYMENT_CONTEXT_MISSING",
@@ -927,6 +1040,9 @@ class CheckoutService:
                         )
                     run.payment_state = PaymentStatus.UNKNOWN.value
                     run.terminal_reason = mismatch_reason
+                    if fulfillment is not None:
+                        fulfillment.status = AgentFulfillmentStatus.PAYMENT_UNKNOWN.value
+                        fulfillment.failure_reason = mismatch_reason
                 await repository.append_audit(
                     run_id=run.id,
                     actor="SYSTEM",
@@ -1036,6 +1152,14 @@ class CheckoutService:
                     reservation.status = ReservationStatus.CAPTURED.value
                     reservation.captured_at = now
                 run.payment_state = PaymentStatus.CAPTURED.value
+                if fulfillment is not None:
+                    fulfillment.paid_at = fulfillment.paid_at or now
+                    fulfillment.failure_reason = run.terminal_reason
+                    fulfillment.status = (
+                        AgentFulfillmentStatus.FULFILLMENT_REVIEW.value
+                        if run.terminal_reason is not None
+                        else AgentFulfillmentStatus.CONFIRMED.value
+                    )
             elif purchase_already_captured:
                 pass
             elif normalized_status == PaymentStatus.FAILED.value:
@@ -1055,6 +1179,9 @@ class CheckoutService:
                 run.terminal_reason = (
                     payment.error_description or "Razorpay reported payment failure."
                 )
+                if fulfillment is not None:
+                    fulfillment.status = AgentFulfillmentStatus.PAYMENT_FAILED.value
+                    fulfillment.failure_reason = run.terminal_reason
             elif normalized_status == PaymentStatus.UNKNOWN.value:
                 if run.state == PurchaseState.PAYMENT_INITIATED:
                     run.state = ensure_transition(
@@ -1063,8 +1190,16 @@ class CheckoutService:
                         provider_write_started=True,
                     )
                 run.payment_state = PaymentStatus.UNKNOWN.value
+                if fulfillment is not None:
+                    fulfillment.status = AgentFulfillmentStatus.PAYMENT_UNKNOWN.value
+                    fulfillment.failure_reason = "Provider payment state requires reconciliation."
             else:
                 run.payment_state = normalized_status
+                if fulfillment is not None and fulfillment.status not in {
+                    AgentFulfillmentStatus.CONFIRMED.value,
+                    AgentFulfillmentStatus.FULFILLMENT_REVIEW.value,
+                }:
+                    fulfillment.status = AgentFulfillmentStatus.PENDING_PAYMENT.value
 
             await repository.append_audit(
                 run_id=run.id,
@@ -1256,6 +1391,11 @@ class CheckoutService:
         return CheckoutSessionResponse(
             run_id=prepared.run_id,
             proposal_id=prepared.proposal_id,
+            fulfillment_order_id=prepared.fulfillment_order_id,
+            fulfillment_order_number=prepared.fulfillment_order_number,
+            fulfillment_status=prepared.fulfillment_status,
+            shipping_address=prepared.shipping_address,
+            policy_snapshot=prepared.policy_snapshot,
             key_id=key_id,
             order_id=prepared.provider_order_id,
             amount_paise=prepared.amount_paise,
@@ -1264,6 +1404,7 @@ class CheckoutService:
             description=prepared.description,
             prefill_name=buyer.display_name,
             prefill_email=buyer.email,
+            prefill_contact=prepared.prefill_contact,
             expires_at=prepared.expires_at,
         )
 
@@ -1273,13 +1414,21 @@ def _prepared_from_existing(
     quote: PurchaseQuote,
     order: RazorpayOrder,
     reservation: PurchaseReservation,
+    fulfillment: AgentFulfillmentOrder,
     merchant_name: str,
 ) -> PreparedCheckout:
+    shipping_address = dict(fulfillment.shipping_address)
     return PreparedCheckout(
         run_id=run.id,
         proposal_id=quote.id,
         order_record_id=order.id,
         reservation_id=reservation.id,
+        fulfillment_order_id=fulfillment.id,
+        fulfillment_order_number=fulfillment.order_number,
+        fulfillment_status=fulfillment.status,
+        shipping_address=shipping_address,
+        policy_snapshot=dict(fulfillment.policy_snapshot),
+        prefill_contact=str(shipping_address.get("phone") or ""),
         receipt=order.receipt,
         amount_paise=order.amount_paise,
         currency=order.currency,
@@ -1361,6 +1510,7 @@ def _status_response(
     order: RazorpayOrder | None,
     payment: PaymentAttempt | None,
     reservation: PurchaseReservation | None,
+    fulfillment: AgentFulfillmentOrder | None,
     razorpay_api_configured: bool,
 ) -> PurchaseRunStatusResponse:
     now = datetime.now(UTC)
@@ -1432,6 +1582,11 @@ def _status_response(
         updated_at=run.updated_at,
         retry_after_ms=2000 if "RECONCILE" in actions else None,
         message=message,
+        fulfillment_order_id=fulfillment.id if fulfillment else None,
+        fulfillment_order_number=fulfillment.order_number if fulfillment else None,
+        fulfillment_status=fulfillment.status if fulfillment else None,
+        shipping_address=dict(fulfillment.shipping_address) if fulfillment else None,
+        policy_snapshot=dict(fulfillment.policy_snapshot) if fulfillment else {},
     )
 
 
@@ -1491,6 +1646,24 @@ def _parse_webhook(raw_body: bytes) -> tuple[str, str | None, str | None, dict[s
     if order_id is not None:
         facts["order_id"] = order_id
     return event_type, payment_id, order_id, facts
+
+
+def _address_snapshot(address: DeliveryAddress) -> dict[str, str | None]:
+    return {
+        "full_name": address.full_name,
+        "phone": address.phone,
+        "line1": address.line1,
+        "line2": address.line2,
+        "landmark": address.landmark,
+        "city": address.city,
+        "state": address.state,
+        "postal_code": address.postal_code,
+        "country": address.country,
+    }
+
+
+def _agent_order_number(run_id: UUID) -> str:
+    return f"SA-{run_id.hex[:20].upper()}"
 
 
 def _audit_secret(settings: Settings) -> str | None:

@@ -409,3 +409,84 @@ async def get_purchase_audit(
             for entry, signature_verified in zip(entries, signatures, strict=True)
         ],
     )
+
+
+# Every governed run, including proposal-only and pre-provider terminal outcomes.
+from sqlalchemy import select as _history_select
+
+from app.models.agent_order import AgentFulfillmentOrder as _AgentFulfillmentOrder
+from app.models.commerce import PurchaseQuote as _PurchaseQuote
+from app.models.commerce import RazorpayOrder as _RazorpayOrder
+from app.models.purchase_run import PurchaseRun as _PurchaseRun
+from app.schemas.agent_history import AgentRunHistoryItem as _AgentRunHistoryItem
+from app.schemas.agent_history import (
+    AgentRunHistoryResponse as _AgentRunHistoryResponse,
+)
+
+
+@router.get("/api/account/runs", response_model=_AgentRunHistoryResponse)
+async def get_agent_run_history(
+    database: DatabaseDependency,
+    principal: CurrentPrincipalDependency,
+) -> _AgentRunHistoryResponse:
+    async with database.session() as session:
+        result = await session.execute(
+            _history_select(
+                _PurchaseRun,
+                _PurchaseQuote,
+                _AgentFulfillmentOrder,
+                _RazorpayOrder,
+            )
+            .outerjoin(
+                _PurchaseQuote,
+                _PurchaseQuote.purchase_run_id == _PurchaseRun.id,
+            )
+            .outerjoin(
+                _AgentFulfillmentOrder,
+                _AgentFulfillmentOrder.purchase_run_id == _PurchaseRun.id,
+            )
+            .outerjoin(
+                _RazorpayOrder,
+                _RazorpayOrder.purchase_run_id == _PurchaseRun.id,
+            )
+            .where(_PurchaseRun.buyer_user_id == principal.user.id)
+            .order_by(_PurchaseRun.created_at.desc(), _PurchaseRun.id.desc())
+            .limit(100)
+        )
+        rows = result.all()
+    return _AgentRunHistoryResponse(
+        items=[
+            _AgentRunHistoryItem(
+                run_id=run.id,
+                conversation_id=run.conversation_id,
+                conversation_turn_id=run.conversation_turn_id,
+                state=run.state.value,
+                payment_state=run.payment_state,
+                terminal_reason=run.terminal_reason,
+                provider_write_started=run.provider_write_started,
+                quote_id=quote.id if quote is not None else None,
+                product_id=quote.product_id if quote is not None else None,
+                product_title=quote.title if quote is not None else None,
+                amount_paise=quote.total_amount_paise if quote is not None else None,
+                currency="INR",
+                quote_expires_at=quote.expires_at if quote is not None else None,
+                fulfillment_order_id=fulfillment.id if fulfillment is not None else None,
+                fulfillment_order_number=(
+                    fulfillment.order_number if fulfillment is not None else None
+                ),
+                fulfillment_status=fulfillment.status if fulfillment is not None else None,
+                shipping_address=(
+                    dict(fulfillment.shipping_address) if fulfillment is not None else None
+                ),
+                policy_snapshot=(
+                    dict(fulfillment.policy_snapshot) if fulfillment is not None else {}
+                ),
+                provider_order_id=(
+                    provider_order.provider_order_id if provider_order is not None else None
+                ),
+                created_at=run.created_at,
+                updated_at=run.updated_at,
+            )
+            for run, quote, fulfillment, provider_order in rows
+        ]
+    )
