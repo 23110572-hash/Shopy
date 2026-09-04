@@ -24,11 +24,11 @@ import type {
 } from './types'
 
 const categoryChoices: Array<{ id: ProductCategory; label: string; glyph: React.ReactNode }> = [
-  { id: 'smartphones', label: 'Phones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> },
-  { id: 'speakers', label: 'Speakers', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><circle cx="12" cy="14" r="4"/><line x1="12" y1="6" x2="12.01" y2="6"/></svg> },
-  { id: 'headphones', label: 'Headphones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg> },
-  { id: 'laptops', label: 'Laptops', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="2" y1="21" x2="22" y2="21"/></svg> },
-  { id: 'tablets', label: 'Tablets', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg> },
+  { id: 'smartphones', label: 'Phones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
+  { id: 'speakers', label: 'Speakers', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><circle cx="12" cy="14" r="4" /><line x1="12" y1="6" x2="12.01" y2="6" /></svg> },
+  { id: 'headphones', label: 'Headphones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg> },
+  { id: 'laptops', label: 'Laptops', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="21" x2="22" y2="21" /></svg> },
+  { id: 'tablets', label: 'Tablets', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
 ]
 
 type AccountTab = 'auth' | 'overview' | 'orders' | 'transactions' | 'agent' | 'security'
@@ -38,8 +38,6 @@ type SessionState = 'loading' | 'guest' | 'authenticated'
 
 interface AccountCenterProps {
   health: HealthStatus | null
-  /** Lets the rest of the app react to sign-in and sign-out. */
-  onSession?: (profile: AccountProfile | null) => void
 }
 
 function formatDate(value: string | null): string {
@@ -66,8 +64,11 @@ function controlsPayload(controls: AgentControls): AgentControlsUpdate {
     per_purchase_limit_paise: controls.per_purchase_limit_paise,
     daily_spend_limit_paise: controls.daily_spend_limit_paise,
     monthly_spend_limit_paise: controls.monthly_spend_limit_paise,
+    approval_required_above_paise: controls.approval_required_above_paise,
     category_allowlist: controls.category_allowlist,
     max_recommendations: controls.max_recommendations,
+    max_replans: controls.max_replans,
+    allow_substitutions: controls.allow_substitutions,
   }
 }
 
@@ -160,8 +161,8 @@ function AuthPortal({ onAuthenticated }: { onAuthenticated: (profile: AccountPro
 }
 
 function HistoryEmpty({ title, reason, kind }: { title: string; reason: string; kind: 'order' | 'transaction' }) {
-  const orderSvg = <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
-  const txSvg = <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>
+  const orderSvg = <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" /><line x1="3" y1="6" x2="21" y2="6" /><path d="M16 10a4 4 0 0 1-8 0" /></svg>
+  const txSvg = <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></svg>
 
   return (
     <div className="history-empty">
@@ -174,7 +175,7 @@ function HistoryEmpty({ title, reason, kind }: { title: string; reason: string; 
   )
 }
 
-function AccountCenter({ health, onSession }: AccountCenterProps) {
+function AccountCenter({ health }: AccountCenterProps) {
   const [sessionState, setSessionState] = useState<SessionState>('loading')
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [activeTab, setActiveTab] = useState<AccountTab>('auth')
@@ -194,14 +195,11 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
         setProfile(account)
         setDisplayName(account.display_name)
         setSessionState('authenticated')
-        onSession?.(account)
-        setActiveTab((current) => current === 'auth' ? 'overview' : current)
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
         // Do not show 'Failed to fetch' error banner to the user just because they are not logged in or API is offline
         setSessionState('guest')
-        onSession?.(null)
         setActiveTab('auth')
       })
     return () => controller.abort()
@@ -273,7 +271,6 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
       setOrders(null)
       setTransactions(null)
       setSessionState('guest')
-      onSession?.(null)
       setActiveTab('auth')
     } catch (error) {
       setDataError(error instanceof Error ? error.message : 'Could not sign out.')
@@ -327,7 +324,6 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
               setProfile(account)
               setDisplayName(account.display_name)
               setSessionState('authenticated')
-              onSession?.(account)
               setActiveTab('overview')
             }} />
           ) : null}
@@ -340,22 +336,26 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
 
           {activeTab === 'orders' ? <section className="account-panel history-panel"><header><div><span>ORDER HISTORY</span><h2>Your orders</h2><p>Only checkout records written by the signed purchase workflow.</p></div><b>{orders?.items.length ?? 0} orders</b></header>{orders?.items.length ? <div className="history-list">{orders.items.map((order) => <article key={order.order_id}><span>Order {order.order_id.slice(0, 8)}</span><strong>{formatPrice(order.amount_paise)}</strong><div className="history-meta"><span className={`status-badge status-${order.status.toLowerCase()}`}>{order.status}</span><small>· {formatDate(order.created_at)}</small></div></article>)}</div> : <HistoryEmpty kind="order" title="No authoritative orders yet" reason={orders?.reason ?? 'Loading order history…'} />}</section> : null}
 
-          {activeTab === 'transactions' ? <section className="account-panel history-panel"><header><div><span>PAYMENT LEDGER</span><h2>Transactions</h2><p>Verified payment events only—never cart estimates.</p></div><b>{transactions?.items.length ?? 0} transactions</b></header>{transactions?.items.length ? <div className="history-list">{transactions.items.map((transaction) => <article key={transaction.transaction_id}><span>Payment · {transaction.transaction_id.slice(0, 8)}</span><strong>{formatPrice(transaction.amount_paise)}</strong><div className="history-meta"><span className={`status-badge status-${transaction.status.toLowerCase()}`}>{transaction.status}</span><small>· {formatDate(transaction.created_at)}</small></div></article>)}</div> : <HistoryEmpty kind="transaction" title="No verified transactions yet" reason={transactions?.reason ?? 'Loading transaction history…'} />}</section> : null}
+          {activeTab === 'transactions' ? <section className="account-panel history-panel"><header><div><span>PAYMENT LEDGER</span><h2>Transactions</h2><p>Verified payment events only—never cart estimates.</p></div><b>{transactions?.items.length ?? 0} transactions</b></header>{transactions?.items.length ? <div className="history-list">{transactions.items.map((transaction) => <article key={transaction.transaction_id}><span>Razorpay · {transaction.transaction_id.slice(0, 8)}</span><strong>{formatPrice(transaction.amount_paise)}</strong><div className="history-meta"><span className={`status-badge status-${transaction.status.toLowerCase()}`}>{transaction.status}</span><small>· {formatDate(transaction.created_at)}</small></div></article>)}</div> : <HistoryEmpty kind="transaction" title="No verified transactions yet" reason={transactions?.reason ?? 'Loading transaction history…'} />}</section> : null}
 
           {activeTab === 'agent' ? <section className="account-panel agent-control-panel">
             <header><div><span>SHOPY AGENT POLICY</span><h2>Agent controls</h2><p>Set hard server-side limits applied before the live catalogue is searched.</p></div><label className="master-switch"><input type="checkbox" checked={draftControls?.agent_enabled ?? false} onChange={(event) => setDraftControls((current) => current ? { ...current, agent_enabled: event.target.checked } : current)} /><span /><b>{draftControls?.agent_enabled ? 'Agent on' : 'Agent off'}</b></label></header>
             {draftControls ? <form onSubmit={saveControls}>
               <div className="control-section"><div className="control-section-title"><span>01</span><div><h3>Recommendation boundary</h3><p>These values actively constrain authenticated Shopy Agent results.</p></div></div><div className="control-grid"><MoneyInput label="Recommendation ceiling" hint="Never recommend products above this price." value={draftControls.recommendation_price_ceiling_paise} onChange={(value) => setDraftControls({ ...draftControls, recommendation_price_ceiling_paise: value })} /><label className="control-field"><span>Maximum recommendations</span><div className="range-value"><input type="range" min="1" max="8" value={draftControls.max_recommendations} onChange={(event) => setDraftControls({ ...draftControls, max_recommendations: Number(event.target.value) })} /><b>{draftControls.max_recommendations}</b></div><small>Maximum product cards returned per request.</small></label></div></div>
-              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Spending limits</h3><p>Enforced when the agent takes you to Razorpay checkout.</p></div></div><div className="control-grid"><MoneyInput label="Per-purchase limit" hint="Blocks any single agent purchase above this, and caps recommendations." value={draftControls.per_purchase_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, per_purchase_limit_paise: value })} /><MoneyInput label="Daily spending limit" hint="Blocks agent checkout once the day's total would exceed this." value={draftControls.daily_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, daily_spend_limit_paise: value })} /><MoneyInput label="Monthly spending limit" hint="Blocks agent checkout once the month's total would exceed this." value={draftControls.monthly_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, monthly_spend_limit_paise: value })} /></div><div className="authority-warning"><span>!</span><div><strong>The agent never pays on its own</strong><p>{controls?.purchase_authority_notice ?? 'Every purchase needs you to confirm it in Razorpay.'}</p></div></div></div>
-              <div className="control-section"><div className="control-section-title"><span>03</span><div><h3>Allowed categories</h3><p>Leave every category unselected to allow the complete catalogue.</p></div></div><div className="category-policy">{categoryChoices.map((category) => { const selected = draftControls.category_allowlist.includes(category.id); return <button type="button" key={category.id} className={selected ? 'selected' : ''} onClick={() => setDraftControls({ ...draftControls, category_allowlist: selected ? draftControls.category_allowlist.filter((value) => value !== category.id) : [...draftControls.category_allowlist, category.id] })}><span>{category.glyph}</span><strong>{category.label}</strong><i>{selected ? '✓' : '+'}</i></button> })}</div><small className="control-footnote">The agent only searches these categories, and checkout is blocked for anything outside them.</small></div>
+              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Spending policy</h3><p>Saved now for policy enforcement; payment authority remains inactive.</p></div></div><div className="control-grid two-by-two"><MoneyInput label="Per-purchase limit" hint="Also caps recommended product price." value={draftControls.per_purchase_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, per_purchase_limit_paise: value })} /><MoneyInput label="Approval required above" hint="Future purchases above this need your approval." value={draftControls.approval_required_above_paise} onChange={(value) => setDraftControls({ ...draftControls, approval_required_above_paise: value })} /><MoneyInput label="Daily spending limit" hint="Maximum future authorized spend per day." value={draftControls.daily_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, daily_spend_limit_paise: value })} /><MoneyInput label="Monthly spending limit" hint="Maximum future authorized spend per month." value={draftControls.monthly_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, monthly_spend_limit_paise: value })} /></div><div className="authority-warning"><span>!</span><div><strong>Autonomous payment is not active</strong><p>{controls?.purchase_authority_notice ?? 'A saved preference is not permission to charge a payment method.'}</p></div><button type="button" disabled>Enable auto-pay</button></div></div>
+              <div className="control-section"><div className="control-section-title"><span>03</span><div><h3>Categories & behavior</h3><p>Leave every category unselected to allow the complete catalogue.</p></div></div><div className="category-policy">{categoryChoices.map((category) => { const selected = draftControls.category_allowlist.includes(category.id); return <button type="button" key={category.id} className={selected ? 'selected' : ''} onClick={() => setDraftControls({ ...draftControls, category_allowlist: selected ? draftControls.category_allowlist.filter((value) => value !== category.id) : [...draftControls.category_allowlist, category.id] })}><span>{category.glyph}</span><strong>{category.label}</strong><i>{selected ? '✓' : '+'}</i></button> })}</div><div className="behavior-row"><label><input type="checkbox" checked={draftControls.allow_substitutions} onChange={(event) => setDraftControls({ ...draftControls, allow_substitutions: event.target.checked })} /><span><strong>Allow substitutions</strong><small>Let future workflows consider another eligible model.</small></span></label><label><span><strong>Maximum replans</strong><small>Bound future candidate retries from 0 to 10.</small></span><select value={draftControls.max_replans} onChange={(event) => setDraftControls({ ...draftControls, max_replans: Number(event.target.value) })}>{Array.from({ length: 11 }, (_, value) => <option value={value} key={value}>{value}</option>)}</select></label></div></div>
               <div className="control-savebar"><div><span>Policy version {controls?.version ?? 1}</span><small>Limits are persisted to your Shopy account.</small></div><button type="submit" disabled={saveState === 'saving'}>{saveState === 'saving' ? 'Saving policy…' : saveState === 'saved' ? 'Saved ✓' : 'Save agent controls'}</button></div>
             </form> : <div className="panel-loading">Loading saved agent policy…</div>}
           </section> : null}
 
-          {activeTab === 'security' && profile ? <section className="account-panel security-panel"><header><div><span>LOGIN & SECURITY</span><h2>Account protection</h2><p>Review your current account and provider readiness.</p></div></header><div className="security-list"><article><div className="security-glyph safe">◇</div><div><strong>Password protection</strong><p>Your password is stored as an Argon2id hash. The original value cannot be read back.</p></div><span>Protected</span></article><article><div className="security-glyph safe">↗</div><div><strong>Current session</strong><p>Signed in with a revocable HttpOnly cookie and CSRF protection. Last login: {formatDate(profile.last_login_at)}.</p></div><span>Active</span></article><article><div className="security-glyph pending">@</div><div><strong>Email verification</strong><p>{profile.email_verified ? 'Your email address is verified.' : 'Email delivery is not connected, so Shopy does not pretend this address is verified.'}</p></div><span>{profile.email_verified ? 'Verified' : 'Pending'}</span></article><article><div className={health?.razorpay.status === 'configured' ? 'security-glyph safe' : 'security-glyph pending'}>₹</div><div><strong>Payment provider</strong><p>Gateway test configuration is separate from permission to make a purchase.</p></div><span>{health?.razorpay.status === 'configured' ? 'Test configured' : 'Not configured'}</span></article></div><button className="security-signout" type="button" onClick={signOut}>Sign out this session</button></section> : null}
+          {activeTab === 'security' && profile ? <section className="account-panel security-panel"><header><div><span>LOGIN & SECURITY</span><h2>Account protection</h2><p>Review your current account and provider readiness.</p></div></header><div className="security-list"><article><div className="security-glyph safe">◇</div><div><strong>Password protection</strong><p>Your password is stored as an Argon2id hash. The original value cannot be read back.</p></div><span>Protected</span></article><article><div className="security-glyph safe">↗</div><div><strong>Current session</strong><p>Signed in with a revocable HttpOnly cookie and CSRF protection. Last login: {formatDate(profile.last_login_at)}.</p></div><span>Active</span></article><article><div className="security-glyph pending">@</div><div><strong>Email verification</strong><p>{profile.email_verified ? 'Your email address is verified.' : 'Email delivery is not connected, so Shopy does not pretend this address is verified.'}</p></div><span>{profile.email_verified ? 'Verified' : 'Pending'}</span></article><article><div className={health?.razorpay.status === 'configured' ? 'security-glyph safe' : 'security-glyph pending'}>₹</div><div><strong>Payment provider</strong><p>Razorpay test configuration is separate from permission to make a purchase.</p></div><span>{health?.razorpay.status === 'configured' ? 'Test configured' : 'Not configured'}</span></article></div><button className="security-signout" type="button" onClick={signOut}>Sign out this session</button></section> : null}
         </div>
       </section>
     </main>
+  )
+}
+
+export default AccountCenter
   )
 }
 

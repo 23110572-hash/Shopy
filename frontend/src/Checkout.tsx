@@ -578,9 +578,9 @@ function Checkout({ cart, onOrderConfirmed, onBack, onSignIn }: CheckoutProps) {
                 onChange={() => setMethod('RAZORPAY')}
               />
               <div>
-                <strong>Pay online · Razorpay</strong>
+                <strong>Pay online</strong>
                 <small>
-                  UPI, cards, and netbanking in Razorpay Test Mode. No real money moves.
+                  UPI, cards, and netbanking.
                 </small>
               </div>
             </label>
