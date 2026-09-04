@@ -7,19 +7,27 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.database import Database
 from app.dependencies import get_database
-from app.models.product import ProductCategory
 from app.repositories.products import ProductRepository
-from app.schemas.catalog import CatalogPage, CatalogProduct
+from app.schemas.catalog import (
+    CatalogCategoryList,
+    CatalogCategorySummary,
+    CatalogPage,
+    CatalogProduct,
+)
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
 product_router = APIRouter(prefix="/api/products", tags=["catalog"])
 DatabaseDependency = Annotated[Database, Depends(get_database)]
+CategoryQuery = Annotated[
+    str | None,
+    Query(max_length=40, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$"),
+]
 
 
 async def _search(
     database: Database,
     query: str | None,
-    category: ProductCategory | None,
+    category: str | None,
     limit: int,
     offset: int,
 ) -> CatalogPage:
@@ -43,7 +51,7 @@ async def _search(
 async def list_catalog(
     database: DatabaseDependency,
     q: Annotated[str | None, Query(max_length=120)] = None,
-    category: ProductCategory | None = None,
+    category: CategoryQuery = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> CatalogPage:
@@ -54,11 +62,30 @@ async def list_catalog(
 async def search_catalog(
     database: DatabaseDependency,
     q: Annotated[str | None, Query(max_length=120)] = None,
-    category: ProductCategory | None = None,
+    category: CategoryQuery = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> CatalogPage:
     return await _search(database, q, category, limit, offset)
+
+
+@router.get("/categories", response_model=CatalogCategoryList)
+async def list_catalogue_categories(database: DatabaseDependency) -> CatalogCategoryList:
+    async with database.session() as session:
+        categories = await ProductRepository(session).list_catalogue_categories()
+    return CatalogCategoryList(
+        items=[
+            CatalogCategorySummary(
+                slug=category.slug,
+                display_name=category.display_name,
+                description=category.description,
+                aliases=category.aliases,
+                facet_definitions=category.facet_definitions,
+                active_product_count=category.active_product_count,
+            )
+            for category in categories
+        ]
+    )
 
 
 @product_router.get("/{product_id}", response_model=CatalogProduct)

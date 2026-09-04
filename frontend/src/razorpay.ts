@@ -26,6 +26,7 @@ export function fromCheckoutSession(session: CheckoutSession): RazorpayCheckoutR
     description: session.description,
     prefillName: session.prefill_name,
     prefillEmail: session.prefill_email,
+    prefillContact: session.prefill_contact,
   }
 }
 

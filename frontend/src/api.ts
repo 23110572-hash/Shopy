@@ -1,10 +1,10 @@
 import type {
   AccountProfile, AgentChatRequest, AgentChatResponse, AgentConversationDetail,
   AgentConversationList, AgentConversationSummary, AgentControls, AgentControlsUpdate,
-  AgentRunHistoryResponse, AuditHistoryResponse, AuthResponse, CatalogPage, CheckoutCallback,
-  CheckoutSession, CustomerOrder, DeliveryAddress, DeliveryAddressInput, DeliveryAddressList,
-  HealthStatus, LoginRequest, OrderHistoryResponse, OrderListResponse, PlaceOrderRequest,
-  PlaceOrderResponse, ProductCategory, PurchaseRunStatus, SignupRequest,
+  AgentRunHistoryResponse, AuditHistoryResponse, AuthResponse, CatalogCategoryList, CatalogPage,
+  CheckoutCallback, CheckoutSession, CustomerOrder, DeliveryAddress, DeliveryAddressInput,
+  DeliveryAddressList, HealthStatus, LoginRequest, OrderHistoryResponse, OrderListResponse,
+  PlaceOrderRequest, PlaceOrderResponse, ProductCategory, PurchaseRunStatus, SignupRequest,
   TransactionHistoryResponse,
 } from './types'
 
@@ -55,6 +55,7 @@ async function requestJson<T>(path: string, options: RequestInit = {}): Promise<
 }
 
 export const fetchHealth = (signal?: AbortSignal) => requestJson<HealthStatus>('/health', { signal })
+export const fetchCatalogCategories = (signal?: AbortSignal) => requestJson<CatalogCategoryList>('/api/catalog/categories', { signal })
 export function fetchCatalog(query: string, category: ProductCategory | 'all', signal?: AbortSignal) {
   const p = new URLSearchParams({ limit: '100' }); if (query.trim()) p.set('q', query.trim()); if (category !== 'all') p.set('category', category)
   return requestJson<CatalogPage>(`/api/catalog?${p}`, { signal })
@@ -63,7 +64,8 @@ export function sendAgentChat(payload: AgentChatRequest, signal?: AbortSignal) {
   return requestJson<AgentChatResponse>('/api/agent/chat', { method: 'POST', headers: protectedHeaders(), body: JSON.stringify(payload), signal })
 }
 export function createAgentConversation(title?: string) {
-  return requestJson<AgentConversationSummary>('/api/agent/conversations', { method: 'POST', headers: protectedHeaders(), body: JSON.stringify({ title: title ?? null }) })
+  const normalized = title?.trim()
+  return requestJson<AgentConversationSummary>('/api/agent/conversations', { method: 'POST', headers: protectedHeaders(), body: JSON.stringify(normalized ? { title: normalized } : {}) })
 }
 export async function fetchAgentConversations(signal?: AbortSignal): Promise<AgentConversationList> {
   const result = await requestJson<AgentConversationList>('/api/agent/conversations', { signal })

@@ -1,4 +1,4 @@
-"""Stateful, bounded Shopy Agent and persisted purchase proposals."""
+"""Stateful LLM-first Shopy Agent and persisted governed purchase proposals."""
 
 from typing import Annotated, NoReturn
 from uuid import UUID
@@ -30,16 +30,12 @@ from app.schemas.agent import (
     AgentConversationSummary,
     AgentConversationTurnResponse,
     AgentRuntimeControls,
-    ShoppingIntent,
 )
+from app.schemas.catalog import CatalogProduct
 from app.security import (
     CsrfPrincipalDependency,
     CurrentPrincipalDependency,
     OptionalPrincipalDependency,
-)
-from app.services.agent_intelligence import (
-    conversation_context_after_response,
-    plan_agent_turn,
 )
 from app.services.proposals import ProposalStaleError, persist_purchase_proposal
 
@@ -55,7 +51,7 @@ def _controls(saved: ShoppingAgentControls) -> AgentRuntimeControls:
         per_purchase_limit_paise=saved.per_purchase_limit_paise,
         daily_spend_limit_paise=saved.daily_spend_limit_paise,
         monthly_spend_limit_paise=saved.monthly_spend_limit_paise,
-        category_allowlist=[],
+        category_allowlist=list(saved.category_allowlist),
         max_recommendations=saved.max_recommendations,
         version=saved.version,
     )
@@ -88,42 +84,78 @@ def _turn_response(turn: AgentConversationTurn) -> AgentConversationTurnResponse
     )
 
 
-def _intent_mode(message: str) -> str | None:
-    normalized = " ".join(message.casefold().split())
-    direct_buy_phrases = (
-        "buy me",
-        "order me",
-        "get me",
-        "buy this",
-        "buy it",
-        "order this",
-        "order it",
-        "purchase this",
-        "purchase it",
-        "place an order",
-        "i want to buy",
-        "can you buy",
-    )
-    if normalized.startswith(("buy ", "order ", "purchase ")) or any(
-        phrase in normalized for phrase in direct_buy_phrases
-    ):
-        return "BUY"
-    recommendation_phrases = (
-        "recommend",
-        "suggest",
-        "compare",
-        "show me",
-        "find me",
-        "which one",
-        "which product",
-    )
-    if any(phrase in normalized for phrase in recommendation_phrases):
-        return "RECOMMEND"
-    return None
-
-
 def _not_found() -> NoReturn:
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+
+
+def _safe_uuid(value: object) -> UUID | None:
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _context_product_ids(context: dict[str, object]) -> list[UUID]:
+    identifiers: list[UUID] = []
+    for key in ("last_recommendation_ids", "pending_option_ids"):
+        values = context.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values[:8]:
+            identifier = _safe_uuid(value)
+            if identifier is not None and identifier not in identifiers:
+                identifiers.append(identifier)
+    focus = _safe_uuid(context.get("focus_product_id"))
+    if focus is not None and focus not in identifiers:
+        identifiers.insert(0, focus)
+    return identifiers[:12]
+
+
+def _context_list(context: dict[str, object], key: str) -> list[object]:
+    value = context.get(key)
+    return list(value) if isinstance(value, list) else []
+
+
+def _next_context(
+    *,
+    previous: dict[str, object],
+    response: AgentChatResponse,
+    request: AgentChatRequest,
+) -> dict[str, object]:
+    recommendation_ids = [str(item.product.id) for item in response.recommendations[:8]]
+    has_new_product_state = bool(recommendation_ids or response.focus_product_id)
+    prior_intent = previous.get("intent")
+    context: dict[str, object] = {
+        "schema_version": 2,
+        "intent": (
+            response.intent.model_dump(mode="json")
+            if has_new_product_state or not isinstance(prior_intent, dict)
+            else prior_intent
+        ),
+        "intent_mode": response.intent_mode,
+        "last_recommendation_ids": (
+            recommendation_ids
+            if recommendation_ids
+            else _context_list(previous, "last_recommendation_ids")
+        ),
+        "focus_product_id": (
+            str(response.focus_product_id)
+            if response.focus_product_id is not None
+            else previous.get("focus_product_id")
+        ),
+        "pending_option_ids": (
+            [str(option.product_id) for option in response.clarification.options]
+            if response.clarification is not None
+            else []
+        ),
+    }
+    if previous.get("cross_sell_declined") is True:
+        context["cross_sell_declined"] = True
+    if request.cross_sell_consent is False:
+        context["cross_sell_declined"] = True
+    elif request.cross_sell_consent is True:
+        context["cross_sell_declined"] = False
+    return context
 
 
 @router.post("/conversations", response_model=AgentConversationSummary, status_code=201)
@@ -224,7 +256,6 @@ async def chat_with_agent(
     llm_gateway: LLMGateway | None = (
         OpenRouterGateway(settings) if settings.openrouter_configured else None
     )
-    explicit_intent_mode = _intent_mode(request.message)
     async with database.session() as session:
         products = ProductRepository(session)
         saved_controls: ShoppingAgentControls | None = None
@@ -269,91 +300,34 @@ async def chat_with_agent(
             if duplicate is not None:
                 return AgentChatResponse.model_validate(duplicate.response_payload)
 
-        intent_mode = explicit_intent_mode
-        if intent_mode is None and conversation is not None:
-            previous_mode = conversation.context.get("intent_mode")
-            continuing_selection = (
-                request.selected_product_id is not None
-                or bool(conversation.context.get("pending_option_ids"))
+        conversation_context = dict(conversation.context) if conversation is not None else {}
+        reference_products = [
+            CatalogProduct.model_validate(product)
+            for product in await products.get_active_many(
+                _context_product_ids(conversation_context)
             )
-            if previous_mode == "BUY" and continuing_selection:
-                intent_mode = "BUY"
-        intent_mode = intent_mode or "RECOMMEND"
+        ]
+        agent_response = await ShoppingGraph(
+            products,
+            llm_gateway,
+            controls=runtime_controls,
+            conversation_context=conversation_context,
+            reference_products=reference_products,
+            cross_sell_allowed=request.cross_sell_consent is True,
+        ).chat(request)
 
         if conversation is None:
-            response = await ShoppingGraph(
-                products,
-                llm_gateway,
-                controls=runtime_controls,
-                cross_sell_allowed=request.cross_sell_consent is True,
-            ).chat(request)
-            intent_mode = response.intent_mode
-            if principal is None and response.winner is not None:
-                return response.model_copy(
+            if principal is None and agent_response.winner is not None:
+                return agent_response.model_copy(
                     update={
                         "notice": (
-                            "Sign in to continue to address confirmation and Razorpay."
-                            if intent_mode == "BUY"
-                            else "Sign in when you want the Agent to buy a product."
+                            "Sign in to choose or add a saved address and continue to Razorpay."
+                            if agent_response.intent_mode == "BUY"
+                            else "Sign in when you want the Agent to buy a selected product."
                         )
                     }
                 )
-            return response
-
-        identity_products = list(await products.list_identity_candidates())
-        plan = plan_agent_turn(
-            request=request,
-            conversation_context=dict(conversation.context),
-            products=identity_products,
-            replan_count=conversation.replan_count,
-        )
-
-        if plan.clarification is not None:
-            prior = plan.inherited_intent or ShoppingIntent(
-                query="", category=request.category, max_price_paise=request.max_price_paise, preferences=[]
-            )
-            agent_response = AgentChatResponse(
-                reply=plan.clarification.question,
-                intent_source="deterministic",
-                intent=prior,
-                recommendations=[],
-                account_controls_applied=runtime_controls is not None,
-                outcome="CLARIFICATION",
-                resolution_kind="CLARIFICATION_REQUIRED",
-                clarification=plan.clarification,
-                replan_count=conversation.replan_count,
-                remaining_replans=3 - conversation.replan_count,
-            )
-        elif plan.resolution_hint == "NO_MATCH" and conversation.replan_count >= 3:
-            prior = plan.inherited_intent or ShoppingIntent(
-                query="", category=request.category, max_price_paise=request.max_price_paise, preferences=[]
-            )
-            agent_response = AgentChatResponse(
-                reply="This conversation has reached its three safe replans. Start a new conversation with updated requirements.",
-                intent_source="deterministic",
-                intent=prior,
-                recommendations=[],
-                account_controls_applied=True,
-                outcome="NO_MATCH",
-                resolution_kind="NO_MATCH",
-                replan_count=conversation.replan_count,
-                remaining_replans=0,
-            )
-        else:
-            agent_response = await ShoppingGraph(
-                products,
-                llm_gateway,
-                controls=runtime_controls,
-                forced_product_id=plan.forced_product_id,
-                excluded_product_ids=plan.excluded_product_ids,
-                previous_intent=plan.inherited_intent,
-                exact_match=plan.exact_match,
-                cross_sell_allowed=plan.cross_sell_allowed,
-            ).chat(request)
-            intent_mode = agent_response.intent_mode
-
-        if plan.replan_increment:
-            conversation.replan_count += 1
+            return agent_response
 
         turn = AgentConversationTurn(
             conversation_id=conversation.id,
@@ -373,7 +347,7 @@ async def chat_with_agent(
             and saved_controls is not None
             and agent_response.winner is not None
             and agent_response.outcome == "RECOMMENDATIONS"
-            and intent_mode == "BUY"
+            and agent_response.intent_mode == "BUY"
             and request.cross_sell_consent is None
         ):
             try:
@@ -401,30 +375,28 @@ async def chat_with_agent(
                     update={
                         "purchase_proposal": proposal,
                         "checkout_available": proposal.checkout_available,
-                        "notice": "" if proposal.checkout_available else "Online payment is not configured yet.",
+                        "notice": (
+                            "Choose or add a saved delivery address, confirm it for this order, "
+                            "then continue in Razorpay Test Mode."
+                            if proposal.checkout_available
+                            else "Razorpay Test Mode is not configured yet."
+                        ),
                     }
                 )
 
-        recommendation_ids = [item.product.id for item in agent_response.recommendations]
-        next_context = conversation_context_after_response(
-            previous=dict(conversation.context),
-            intent=agent_response.intent,
-            recommendation_ids=recommendation_ids,
-            focus_product_id=agent_response.focus_product_id,
-            clarification=agent_response.clarification,
-        )
         if request.cross_sell_consent is False:
-            next_context["cross_sell_declined"] = True
             agent_response = agent_response.model_copy(
                 update={
                     "notice": "Optional add-ons were declined and will not be bundled or searched.",
                     "cross_sell_consent_required": False,
                 }
             )
-        elif request.cross_sell_consent is True:
-            next_context["cross_sell_declined"] = False
-        next_context["intent_mode"] = intent_mode
-        conversation.context = next_context
+
+        conversation.context = _next_context(
+            previous=conversation_context,
+            response=agent_response,
+            request=request,
+        )
         conversation.turn_count += 1
         conversation.last_message_preview = request.message[:240]
         await session.flush()
@@ -436,7 +408,6 @@ async def chat_with_agent(
                 "turn_id": turn.id,
                 "replan_count": conversation.replan_count,
                 "remaining_replans": 3 - conversation.replan_count,
-                "intent_mode": intent_mode,
             }
         )
         turn.assistant_reply = agent_response.reply

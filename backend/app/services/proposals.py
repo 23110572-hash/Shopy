@@ -62,7 +62,7 @@ async def persist_purchase_proposal(
     request_payload = {
         "buyer_user_id": str(buyer_user_id),
         "message": request.message,
-        "category": request.category.value if request.category else None,
+        "category": request.category,
         "max_price_paise": request.max_price_paise,
         "selected_product_id": str(product.id),
         "product_version": product.version,
@@ -136,7 +136,7 @@ async def persist_purchase_proposal(
         title=product.title,
         brand=product.brand,
         model=product.model,
-        category=product.category.value,
+        category=product.category,
         unit_amount_paise=product.offer_price_paise,
         quantity=1,
         total_amount_paise=product.offer_price_paise,

@@ -1,7 +1,6 @@
-"""Merchant-owned technology catalogue model."""
+"""Merchant-owned, data-defined product catalogue models."""
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -9,7 +8,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    Enum,
     ForeignKey,
     Index,
     Integer,
@@ -24,13 +22,56 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
+CATEGORY_SLUG_MAX_LENGTH = 40
+LEGACY_PRODUCT_CATEGORIES = (
+    "smartphones",
+    "speakers",
+    "headphones",
+    "laptops",
+    "tablets",
+)
 
-class ProductCategory(StrEnum):
-    SMARTPHONES = "smartphones"
-    SPEAKERS = "speakers"
-    HEADPHONES = "headphones"
-    LAPTOPS = "laptops"
-    TABLETS = "tablets"
+
+class CatalogCategory(TimestampMixin, Base):
+    """A catalogue-owned category and its LLM-readable discovery metadata."""
+
+    __tablename__ = "catalog_categories"
+    __table_args__ = (
+        CheckConstraint(
+            "slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'",
+            name="slug_format",
+        ),
+        CheckConstraint("sort_order >= 0", name="sort_order_non_negative"),
+        Index("ix_catalog_categories_active_sort", "is_active", "sort_order"),
+    )
+
+    slug: Mapped[str] = mapped_column(String(CATEGORY_SLUG_MAX_LENGTH), primary_key=True)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    aliases: Mapped[list[str]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    facet_definitions: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=text("'[]'::jsonb"),
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
 
 
 class Product(TimestampMixin, Base):
@@ -47,6 +88,12 @@ class Product(TimestampMixin, Base):
         CheckConstraint("source_url LIKE 'https://%'", name="source_url_https"),
         Index("ix_products_catalog_lookup", "category", "is_active"),
         Index("ix_products_merchant_active", "merchant_id", "is_active"),
+        Index(
+            "ix_products_agent_filter",
+            "is_active",
+            "category",
+            "offer_price_paise",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -56,13 +103,9 @@ class Product(TimestampMixin, Base):
     sku: Mapped[str] = mapped_column(String(64), nullable=False)
     brand: Mapped[str] = mapped_column(String(120), nullable=False)
     model: Mapped[str] = mapped_column(String(180), nullable=False)
-    category: Mapped[ProductCategory] = mapped_column(
-        Enum(
-            ProductCategory,
-            name="product_category",
-            values_callable=lambda enum: [item.value for item in enum],
-            validate_strings=True,
-        ),
+    category: Mapped[str] = mapped_column(
+        String(CATEGORY_SLUG_MAX_LENGTH),
+        ForeignKey("catalog_categories.slug", ondelete="RESTRICT"),
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -80,6 +123,12 @@ class Product(TimestampMixin, Base):
     )
     search_tags: Mapped[list[str]] = mapped_column(
         JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
+    search_document: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default="",
     )
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str] = mapped_column(String(2048), nullable=False)

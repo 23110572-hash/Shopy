@@ -1,9 +1,11 @@
-"""Validate and idempotently import the verified 100-product catalogue."""
+"""Validate and idempotently import a data-defined product catalogue."""
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,13 +19,6 @@ from sqlalchemy import Connection, create_engine, text
 from app.config import get_settings
 
 DATA_FILE = Path(__file__).resolve().parents[1] / "data" / "verified_tech_products.csv"
-EXPECTED_CATEGORIES = {
-    "smartphones": 20,
-    "speakers": 20,
-    "headphones": 20,
-    "laptops": 20,
-    "tablets": 20,
-}
 EXPECTED_FIELDS = {
     "sku",
     "brand",
@@ -43,6 +38,8 @@ EXPECTED_FIELDS = {
 }
 SEED_ADMIN_EMAIL = "catalog-admin@mandateguard.local"
 SEED_MERCHANT_SLUG = "mandateguard-tech"
+_CATEGORY_SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+_CATEGORY_SLUG_MAX_LENGTH = 40
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +82,26 @@ class SeedProduct:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SeedCategory:
+    slug: str
+    display_name: str
+    description: str
+    aliases: list[str]
+    facet_definitions: list[dict[str, str]]
+    sort_order: int
+
+    def parameters(self) -> dict[str, object]:
+        return {
+            "slug": self.slug,
+            "display_name": self.display_name,
+            "description": self.description,
+            "aliases": json.dumps(self.aliases),
+            "facet_definitions": json.dumps(self.facet_definitions),
+            "sort_order": self.sort_order,
+        }
+
+
 def _required(row: dict[str, str | None], field: str, line_number: int) -> str:
     value = row.get(field)
     if value is None or not value.strip():
@@ -102,10 +119,18 @@ def _positive_integer(raw: str, field: str, line_number: int) -> int:
     return value
 
 
+def _category_slug(raw: str, line_number: int) -> str:
+    slug = raw.casefold()
+    if len(slug) > _CATEGORY_SLUG_MAX_LENGTH or _CATEGORY_SLUG.fullmatch(slug) is None:
+        raise ValueError(
+            f"Line {line_number}: category must be a lowercase slug no longer than "
+            f"{_CATEGORY_SLUG_MAX_LENGTH} characters"
+        )
+    return slug
+
+
 def _parse_row(row: dict[str, str | None], line_number: int) -> SeedProduct:
-    category = _required(row, "category", line_number).lower()
-    if category not in EXPECTED_CATEGORIES:
-        raise ValueError(f"Line {line_number}: unsupported category {category}")
+    category = _category_slug(_required(row, "category", line_number), line_number)
 
     offer_price = _positive_integer(
         _required(row, "offer_price_paise", line_number), "offer_price_paise", line_number
@@ -128,7 +153,7 @@ def _parse_row(row: dict[str, str | None], line_number: int) -> SeedProduct:
 
     raw_specifications: Any = json.loads(_required(row, "specifications_json", line_number))
     if not isinstance(raw_specifications, dict):
-        raise ValueError(f"Line {line_number}: specifications_json must be an object")
+        raise TypeError(f"Line {line_number}: specifications_json must be an object")
     specifications = {str(key): value for key, value in raw_specifications.items()}
 
     tags = [tag.strip().lower() for tag in _required(row, "search_tags", line_number).split("|")]
@@ -173,22 +198,58 @@ def _parse_row(row: dict[str, str | None], line_number: int) -> SeedProduct:
 def load_and_validate_catalog(path: Path = DATA_FILE) -> list[SeedProduct]:
     with path.open("r", encoding="utf-8", newline="") as source:
         reader = csv.DictReader(source)
-        if reader.fieldnames is None or set(reader.fieldnames) != EXPECTED_FIELDS:
-            raise ValueError("Catalogue CSV columns do not match the required schema")
+        fieldnames = set(reader.fieldnames or [])
+        missing_fields = sorted(EXPECTED_FIELDS - fieldnames)
+        if missing_fields:
+            raise ValueError(
+                "Catalogue CSV is missing required columns: " + ", ".join(missing_fields)
+            )
         products = [_parse_row(row, line_number) for line_number, row in enumerate(reader, 2)]
 
-    if len(products) != 100:
-        raise ValueError(f"Initial catalogue must contain exactly 100 rows; found {len(products)}")
+    if not products:
+        raise ValueError("Catalogue must contain at least one product")
     sku_counts = Counter(product.sku for product in products)
     duplicate_skus = sorted(sku for sku, count in sku_counts.items() if count > 1)
     if duplicate_skus:
         raise ValueError(f"Duplicate SKUs: {', '.join(duplicate_skus)}")
-    category_counts = Counter(product.category for product in products)
-    if dict(category_counts) != EXPECTED_CATEGORIES:
-        raise ValueError(
-            f"Expected exactly 20 products per category; found {dict(category_counts)}"
-        )
     return products
+
+
+def _humanize(value: str) -> str:
+    return " ".join(part.capitalize() for part in re.split(r"[-_\s]+", value) if part)
+
+
+def _catalog_categories(products: list[SeedProduct]) -> list[SeedCategory]:
+    """Derive baseline discovery metadata without constraining the category taxonomy."""
+
+    products_by_category: dict[str, list[SeedProduct]] = {}
+    for product in products:
+        products_by_category.setdefault(product.category, []).append(product)
+
+    categories: list[SeedCategory] = []
+    for sort_order, (slug, category_products) in enumerate(products_by_category.items()):
+        display_name = _humanize(slug)
+        specification_keys = sorted(
+            {
+                key
+                for product in category_products
+                for key in product.specifications
+                if key.strip()
+            }
+        )
+        categories.append(
+            SeedCategory(
+                slug=slug,
+                display_name=display_name,
+                description=f"{display_name} products in the Shopy catalogue.",
+                aliases=[],
+                facet_definitions=[
+                    {"key": key, "label": _humanize(key)} for key in specification_keys
+                ],
+                sort_order=sort_order,
+            )
+        )
+    return categories
 
 
 def _ensure_merchant(connection: Connection) -> UUID:
@@ -236,6 +297,35 @@ def _ensure_merchant(connection: Connection) -> UUID:
     return merchant_id if isinstance(merchant_id, UUID) else UUID(str(merchant_id))
 
 
+def _upsert_categories(connection: Connection, categories: list[SeedCategory]) -> None:
+    statement = text(
+        """
+        INSERT INTO catalog_categories (
+            slug, display_name, description, aliases, facet_definitions,
+            is_active, sort_order
+        ) VALUES (
+            :slug, :display_name, :description, CAST(:aliases AS jsonb),
+            CAST(:facet_definitions AS jsonb), true, :sort_order
+        )
+        ON CONFLICT (slug) DO UPDATE
+        SET display_name = EXCLUDED.display_name,
+            description = CASE
+                WHEN catalog_categories.description = '' THEN EXCLUDED.description
+                ELSE catalog_categories.description
+            END,
+            aliases = CASE
+                WHEN catalog_categories.aliases = '[]'::jsonb THEN EXCLUDED.aliases
+                ELSE catalog_categories.aliases
+            END,
+            facet_definitions = EXCLUDED.facet_definitions,
+            is_active = true,
+            sort_order = EXCLUDED.sort_order,
+            updated_at = now()
+        """
+    )
+    connection.execute(statement, [category.parameters() for category in categories])
+
+
 def _commercial_values(product: SeedProduct) -> tuple[object, ...]:
     return (
         product.brand,
@@ -280,6 +370,7 @@ def import_catalog(products: list[SeedProduct]) -> tuple[int, int, int]:
     inserted = updated = unchanged = 0
     try:
         with engine.begin() as connection:
+            _upsert_categories(connection, _catalog_categories(products))
             merchant_id = _ensure_merchant(connection)
             rows = connection.execute(
                 text(
@@ -311,7 +402,7 @@ def import_catalog(products: list[SeedProduct]) -> tuple[int, int, int]:
                                 specifications_verified_at
                             ) VALUES (
                                 :id, :merchant_id, :sku, :brand, :model,
-                                CAST(:category AS product_category), :title,
+                                :category, :title,
                                 :description, :offer_price_paise, :mrp_paise,
                                 :inventory_quantity, :is_active,
                                 CAST(:specifications AS jsonb), CAST(:search_tags AS jsonb),
@@ -330,7 +421,7 @@ def import_catalog(products: list[SeedProduct]) -> tuple[int, int, int]:
                             UPDATE products
                             SET brand = :brand,
                                 model = :model,
-                                category = CAST(:category AS product_category),
+                                category = :category,
                                 title = :title,
                                 description = :description,
                                 offer_price_paise = :offer_price_paise,
@@ -358,10 +449,20 @@ def import_catalog(products: list[SeedProduct]) -> tuple[int, int, int]:
 
 
 def main() -> None:
-    products = load_and_validate_catalog()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "catalogue",
+        nargs="?",
+        type=Path,
+        default=DATA_FILE,
+        help=f"CSV catalogue to import (default: {DATA_FILE})",
+    )
+    path = parser.parse_args().catalogue
+    products = load_and_validate_catalog(path)
     inserted, updated, unchanged = import_catalog(products)
     print(
         "Catalogue import complete: "
+        f"source={path}, categories={len(_catalog_categories(products))}, "
         f"validated={len(products)}, inserted={inserted}, "
         f"updated={updated}, unchanged={unchanged}"
     )

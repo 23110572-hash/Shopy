@@ -13,20 +13,38 @@ export default function AgentCheckout({ proposal, signedIn, onSignIn, onRunChang
   const [adding, setAdding] = useState(false)
   const [draft, setDraft] = useState<DeliveryAddressInput>(empty)
   const [status, setStatus] = useState<PurchaseRunStatus | null>(null)
-  const [runId, setRunId] = useState<string | null>(proposal.run_id ?? null)
+  const [runId, setRunId] = useState<string | null>(proposal.run_id)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    setAddresses([])
+    setSelected(null)
+    setConfirmed(false)
+    setAdding(false)
+    setDraft(empty)
+    setStatus(null)
+    setRunId(proposal.run_id)
+    setBusy(false)
+    setError(null)
     if (!signedIn) return
+
     const controller = new AbortController()
-    fetchAddresses(controller.signal).then((result) => { setAddresses(result.items); setSelected((result.items.find((x) => x.is_default) ?? result.items[0])?.id ?? null) }).catch((reason: unknown) => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Addresses are unavailable.') })
+    void fetchAddresses(controller.signal).then((result) => {
+      setAddresses(result.items)
+      setSelected((result.items.find((address) => address.is_default) ?? result.items[0])?.id ?? null)
+    }).catch((reason: unknown) => {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Addresses are unavailable.')
+    })
+    void fetchCheckoutStatus(proposal.run_id, controller.signal).then(setStatus).catch((reason: unknown) => {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'The proposal status is unavailable.')
+    })
     return () => controller.abort()
-  }, [signedIn])
+  }, [proposal.proposal_id, proposal.run_id, signedIn])
 
   async function saveAddress(event: React.FormEvent) {
     event.preventDefault(); setBusy(true); setError(null)
-    try { const saved = await createAddress(draft); setAddresses((items) => [saved, ...items]); setSelected(saved.id); setAdding(false); setDraft(empty) }
+    try { const saved = await createAddress(draft); setAddresses((items) => [saved, ...items]); setSelected(saved.id); setConfirmed(false); setAdding(false); setDraft(empty) }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Address could not be saved.') }
     finally { setBusy(false) }
   }

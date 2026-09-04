@@ -1,10 +1,8 @@
-"""Bounded catalogue retrieval and LLM product comparison orchestrated with LangGraph."""
+"""LLM-first catalogue research and grounded product selection with LangGraph."""
 
 from __future__ import annotations
 
-import re
-from decimal import Decimal, InvalidOperation
-from typing import TypedDict
+from typing import Literal, TypedDict
 from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
@@ -12,99 +10,68 @@ from pydantic import ValidationError
 
 from app.gateways.llm import LLMGateway
 from app.gateways.openrouter import LLMProviderError
-from app.models.product import ProductCategory
-from app.repositories.products import ProductRepository
+from app.repositories.products import (
+    AgentCatalogDiagnostics,
+    AgentCatalogHit,
+    AgentCatalogResult,
+    CatalogCategoryDescriptor,
+    ProductRepository,
+)
 from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
+    AgentClarification,
     AgentDecisionSource,
     AgentIntentMode,
     AgentIntentSource,
     AgentProductDecision,
     AgentRecommendation,
     AgentRuntimeControls,
-    ParsedShoppingIntent,
+    ClarificationOption,
     ProductComparisonDecision,
+    RetrievalEvaluation,
     ShoppingIntent,
+    ShoppingUnderstanding,
 )
-from app.schemas.catalog import CatalogProduct
+from app.schemas.catalog import CatalogProduct, CatalogSearchDiagnostics
 
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-_PRICE_PATTERN = re.compile(
-    r"(?:under|below|less\s+than|within|up\s+to|max(?:imum)?(?:\s+of)?|budget(?:\s+of)?)"
-    r"\s*(?:₹|rs\.?|inr)?\s*([\d][\d,]*(?:\.\d+)?)\s*(k|thousand|lakh|lac)?\b",
-    re.IGNORECASE,
-)
-_CATEGORY_ALIASES: dict[ProductCategory, frozenset[str]] = {
-    ProductCategory.SMARTPHONES: frozenset(
-        {"smartphone", "smartphones", "phone", "phones", "mobile"}
-    ),
-    ProductCategory.SPEAKERS: frozenset({"speaker", "speakers", "soundbar"}),
-    ProductCategory.HEADPHONES: frozenset(
-        {"headphone", "headphones", "earphone", "earphones", "earbud", "earbuds", "headset"}
-    ),
-    ProductCategory.LAPTOPS: frozenset({"laptop", "laptops", "notebook", "notebooks"}),
-    ProductCategory.TABLETS: frozenset({"tablet", "tablets", "ipad"}),
-}
-_STOP_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "best",
-        "buy",
-        "find",
-        "for",
-        "good",
-        "i",
-        "inr",
-        "looking",
-        "max",
-        "maximum",
-        "me",
-        "need",
-        "of",
-        "please",
-        "recommend",
-        "recommendation",
-        "recommendations",
-        "rs",
-        "rupees",
-        "show",
-        "some",
-        "the",
-        "to",
-        "under",
-        "up",
-        "want",
-        "with",
-        "within",
-    }
-    | {alias for aliases in _CATEGORY_ALIASES.values() for alias in aliases}
-)
+MAX_RETRIEVAL_PASSES = 3
+MAX_RETRIEVAL_CANDIDATES = 40
+MAX_FINALISTS = 8
 
 
 class ShoppingGraphState(TypedDict, total=False):
     request: AgentChatRequest
+    taxonomy: list[CatalogCategoryDescriptor]
+    understanding: ShoppingUnderstanding
     intent: ShoppingIntent
     intent_mode: AgentIntentMode
     intent_source: AgentIntentSource
-    allowed_categories: list[ProductCategory]
+    category_slugs: list[str]
+    search_query: str
+    soft_preferences: list[str]
+    hard_requirements: list[str]
+    allowed_categories: list[str]
+    forced_product_id: UUID
+    excluded_product_ids: list[UUID]
+    exact_match: bool
     effective_limit: int
-    blocked_reason: str
     controls_applied: bool
-    candidates: list[CatalogProduct]
+    blocked_reason: str
+    clarification: AgentClarification
+    retrieval_passes: int
+    seen_plan_keys: list[str]
+    search_result: AgentCatalogResult
+    accumulated_hits: list[AgentCatalogHit]
+    evaluation: RetrievalEvaluation
     shortlist: list[AgentRecommendation]
-    complementary_candidates: list[AgentRecommendation]
     recommendations: list[AgentRecommendation]
     decision: AgentProductDecision
-    evaluated_count: int
-    eligible_count: int
     response: AgentChatResponse
 
 
 class ShoppingGraph:
-    """Let the LLM compare real candidates while code keeps every hard boundary authoritative."""
+    """Let the LLM understand, research and decide; code preserves catalogue truth."""
 
     def __init__(
         self,
@@ -112,35 +79,45 @@ class ShoppingGraph:
         llm_gateway: LLMGateway | None = None,
         controls: AgentRuntimeControls | None = None,
         *,
-        forced_product_id: UUID | None = None,
-        excluded_product_ids: list[UUID] | None = None,
-        previous_intent: ShoppingIntent | None = None,
-        exact_match: bool = False,
+        conversation_context: dict[str, object] | None = None,
+        reference_products: list[CatalogProduct] | None = None,
         cross_sell_allowed: bool = False,
     ) -> None:
         self._repository = repository
         self._llm_gateway = llm_gateway
         self._controls = controls
-        self._forced_product_id = forced_product_id
-        self._excluded_product_ids = excluded_product_ids or []
-        self._previous_intent = previous_intent
-        self._exact_match = exact_match
+        self._conversation_context = conversation_context or {}
+        self._reference_products = reference_products or []
+        # Cross-sells remain a separate, explicit product journey. This graph never
+        # silently bundles them into the selected primary purchase.
         self._cross_sell_allowed = cross_sell_allowed
 
         builder = StateGraph(ShoppingGraphState)
-        builder.add_node("parse_intent", self._parse_intent)
+        builder.add_node("load_catalogue_context", self._load_catalogue_context)
+        builder.add_node("understand_request", self._understand_request)
         builder.add_node("apply_controls", self._apply_controls)
-        builder.add_node("search_catalog", self._search_catalog)
-        builder.add_node("rank_shortlist", self._rank_shortlist)
-        builder.add_node("search_complements", self._search_complements)
+        builder.add_node("retrieve_catalogue", self._retrieve_catalogue)
+        builder.add_node("evaluate_results", self._evaluate_results)
         builder.add_node("compare_products", self._compare_products)
         builder.add_node("compose_response", self._compose_response)
-        builder.add_edge(START, "parse_intent")
-        builder.add_edge("parse_intent", "apply_controls")
-        builder.add_edge("apply_controls", "search_catalog")
-        builder.add_edge("search_catalog", "rank_shortlist")
-        builder.add_edge("rank_shortlist", "search_complements")
-        builder.add_edge("search_complements", "compare_products")
+        builder.add_edge(START, "load_catalogue_context")
+        builder.add_edge("load_catalogue_context", "understand_request")
+        builder.add_edge("understand_request", "apply_controls")
+        builder.add_conditional_edges(
+            "apply_controls",
+            self._route_after_controls,
+            {"retrieve": "retrieve_catalogue", "compose": "compose_response"},
+        )
+        builder.add_edge("retrieve_catalogue", "evaluate_results")
+        builder.add_conditional_edges(
+            "evaluate_results",
+            self._route_after_evaluation,
+            {
+                "retrieve": "retrieve_catalogue",
+                "compare": "compare_products",
+                "compose": "compose_response",
+            },
+        )
         builder.add_edge("compare_products", "compose_response")
         builder.add_edge("compose_response", END)
         self._graph = builder.compile()
@@ -152,58 +129,241 @@ class ShoppingGraph:
             raise RuntimeError("Shopping graph did not produce a response")
         return AgentChatResponse.model_validate(response)
 
-    async def _parse_intent(self, state: ShoppingGraphState) -> ShoppingGraphState:
+    async def _load_catalogue_context(
+        self, state: ShoppingGraphState
+    ) -> ShoppingGraphState:
+        taxonomy = await self._repository.list_catalogue_categories()
+        return ShoppingGraphState(
+            taxonomy=taxonomy,
+            retrieval_passes=0,
+            seen_plan_keys=[],
+            accumulated_hits=[],
+            effective_limit=state["request"].limit,
+            controls_applied=False,
+        )
+
+    async def _understand_request(
+        self, state: ShoppingGraphState
+    ) -> ShoppingGraphState:
         request = state["request"]
-        current_intent = _parse_deterministic_intent(request)
-        deterministic_intent = _merge_previous_intent(current_intent, self._previous_intent)
-        fallback_mode = _fallback_intent_mode(request.message)
+        previous_intent = _previous_intent(self._conversation_context)
+        default_intent = ShoppingIntent(
+            query=previous_intent.query if previous_intent else "",
+            category=request.category or (previous_intent.category if previous_intent else None),
+            max_price_paise=request.max_price_paise
+            or (previous_intent.max_price_paise if previous_intent else None),
+            preferences=previous_intent.preferences if previous_intent else [],
+        )
         if self._llm_gateway is None:
             return ShoppingGraphState(
-                intent=deterministic_intent,
-                intent_mode=fallback_mode,
-                intent_source="deterministic",
+                intent=default_intent,
+                intent_mode="RECOMMEND",
+                intent_source="deterministic_fallback",
+                blocked_reason=(
+                    "The Agent's reasoning service is temporarily unavailable. "
+                    "No recommendation, order, or payment action was created."
+                ),
             )
 
+        allowed_reference_ids = {product.id for product in self._reference_products}
+        catalogue_payload = {
+            "categories": [
+                {
+                    "slug": category.slug,
+                    "name": category.display_name,
+                    "description": category.description,
+                    "aliases": category.aliases,
+                    "facets": category.facet_definitions,
+                    "active_product_count": category.active_product_count,
+                }
+                for category in state.get("taxonomy", [])
+            ],
+            "money_unit": "INR",
+            "searchable_product_fields": [
+                "sku",
+                "brand",
+                "model",
+                "title",
+                "description",
+                "category",
+                "search_tags",
+                "specifications",
+            ],
+        }
+        conversation_payload = {
+            "previous_intent": (
+                previous_intent.model_dump(mode="json") if previous_intent else None
+            ),
+            "previous_intent_mode": self._conversation_context.get("intent_mode"),
+            "allowed_previous_products": [
+                _compact_product(product) for product in self._reference_products
+            ],
+            "current_focus_product_id": self._conversation_context.get(
+                "focus_product_id"
+            ),
+            "client_selected_product_id": (
+                str(request.selected_product_id)
+                if request.selected_product_id is not None
+                else None
+            ),
+        }
         try:
-            raw_intent = await self._llm_gateway.parse_structured_intent(
+            raw = await self._llm_gateway.understand_request(
                 user_text=request.message,
-                json_schema=ParsedShoppingIntent.model_json_schema(),
+                conversation_context=conversation_payload,
+                catalogue_context=catalogue_payload,
+                json_schema=ShoppingUnderstanding.model_json_schema(),
             )
-            parsed_intent = ParsedShoppingIntent.model_validate(raw_intent)
+            understanding = ShoppingUnderstanding.model_validate(raw)
         except (LLMProviderError, ValidationError):
             return ShoppingGraphState(
-                intent=deterministic_intent,
-                intent_mode=fallback_mode,
+                intent=default_intent,
+                intent_mode="RECOMMEND",
                 intent_source="deterministic_fallback",
+                blocked_reason=(
+                    "The Agent could not safely understand this request right now. "
+                    "No recommendation, order, or payment action was created. Please try again."
+                ),
             )
 
-        provider_ceiling = parsed_intent.max_price_paise
-        current_ceiling = current_intent.max_price_paise
-        max_price_paise = request.max_price_paise or provider_ceiling or deterministic_intent.max_price_paise
-        # A locally recognized explicit ceiling is only a hard overspend guard. The
-        # model remains responsible for understanding the request and comparing products.
-        if current_ceiling is not None and (
-            max_price_paise is None or max_price_paise > current_ceiling
+        known_categories = {category.slug for category in state.get("taxonomy", [])}
+        unknown_categories = set(understanding.category_slugs) - known_categories
+        returned_reference_ids = set(understanding.referenced_product_ids)
+        returned_exclusion_ids = set(understanding.excluded_product_ids)
+        if unknown_categories:
+            return ShoppingGraphState(
+                understanding=understanding,
+                intent=default_intent,
+                intent_mode="RECOMMEND",
+                intent_source="openrouter",
+                blocked_reason=(
+                    "The Agent produced a catalogue category that does not exist. "
+                    "No product or payment action was selected. Please try again."
+                ),
+            )
+        if not returned_reference_ids.issubset(allowed_reference_ids) or not (
+            returned_exclusion_ids.issubset(allowed_reference_ids)
         ):
-            max_price_paise = current_ceiling
+            return ShoppingGraphState(
+                understanding=understanding,
+                intent=default_intent,
+                intent_mode="RECOMMEND",
+                intent_source="openrouter",
+                clarification=_reference_clarification(
+                    "I could not safely connect that reference to one of the products shown in this session.",
+                    self._reference_products,
+                ),
+            )
+
+        selected_product_id = request.selected_product_id
+        if selected_product_id is not None and selected_product_id not in allowed_reference_ids:
+            return ShoppingGraphState(
+                understanding=understanding,
+                intent=default_intent,
+                intent_mode="RECOMMEND",
+                intent_source="openrouter",
+                clarification=_reference_clarification(
+                    "That product is not one of the verified options in this session. Which product did you mean?",
+                    self._reference_products,
+                ),
+            )
+
+        forced_product_id: UUID | None = selected_product_id
+        if forced_product_id is None and understanding.reference_status == "RESOLVED":
+            forced_product_id = understanding.referenced_product_ids[0]
+
+        if understanding.needs_clarification or understanding.reference_status in {
+            "AMBIGUOUS",
+            "INVALID",
+        }:
+            question = understanding.clarification_question or (
+                "Which of the products from the current session did you mean?"
+            )
+            clarification = (
+                _reference_clarification(question, self._reference_products)
+                if understanding.reference_status in {"AMBIGUOUS", "INVALID"}
+                else AgentClarification(
+                    kind="REQUIREMENTS", question=question, options=[]
+                )
+            )
+        else:
+            clarification = None
+
+        provider_ceiling = (
+            understanding.budget.maximum_inr * 100
+            if understanding.budget.maximum_inr is not None
+            else None
+        )
+        continuing = (
+            understanding.intent_mode == "REFINE" or forced_product_id is not None
+        )
+        max_price_paise = (
+            request.max_price_paise
+            or provider_ceiling
+            or (
+                previous_intent.max_price_paise
+                if continuing and previous_intent is not None
+                else None
+            )
+        )
+        categories = list(understanding.category_slugs)
+        if request.category is not None:
+            categories = [request.category]
+        elif not categories and continuing and previous_intent and previous_intent.category:
+            categories = [previous_intent.category]
+
+        search_query = understanding.search_query
+        if not search_query and continuing and previous_intent is not None:
+            search_query = previous_intent.query
+        preferences = list(
+            dict.fromkeys(
+                [*understanding.hard_requirements, *understanding.soft_preferences]
+            )
+        )[:16]
+        if not preferences and continuing and previous_intent is not None:
+            preferences = previous_intent.preferences
+
+        previous_mode = self._conversation_context.get("intent_mode")
+        intent_mode = understanding.intent_mode
+        if intent_mode == "REFINE":
+            intent_mode = (
+                previous_mode
+                if previous_mode in {"BUY", "RECOMMEND", "COMPARE"}
+                else "RECOMMEND"
+            )
+        elif selected_product_id is not None and previous_mode == "BUY":
+            # The product identity is explicit typed state from a prior BUY clarification.
+            intent_mode = "BUY"
+
         intent = ShoppingIntent(
-            query=parsed_intent.query or deterministic_intent.query,
-            category=(
-                request.category
-                or parsed_intent.category
-                or current_intent.category
-                or deterministic_intent.category
-            ),
+            query=search_query,
+            category=categories[0] if categories else None,
             max_price_paise=max_price_paise,
-            preferences=parsed_intent.preferences or deterministic_intent.preferences,
+            preferences=preferences,
         )
-        return ShoppingGraphState(
+        result = ShoppingGraphState(
+            understanding=understanding,
             intent=intent,
-            intent_mode=parsed_intent.intent_mode,
+            intent_mode=intent_mode,
             intent_source="openrouter",
+            category_slugs=categories,
+            search_query=search_query,
+            soft_preferences=list(understanding.soft_preferences),
+            hard_requirements=list(understanding.hard_requirements),
+            excluded_product_ids=list(understanding.excluded_product_ids),
+            exact_match=forced_product_id is not None,
         )
+        if forced_product_id is not None:
+            result["forced_product_id"] = forced_product_id
+        if clarification is not None:
+            result["clarification"] = clarification
+        return result
 
     def _apply_controls(self, state: ShoppingGraphState) -> ShoppingGraphState:
+        if state.get("blocked_reason") or state.get("clarification"):
+            return ShoppingGraphState()
+        if state.get("intent_mode") == "OTHER":
+            return ShoppingGraphState()
         request = state["request"]
         controls = self._controls
         if controls is None:
@@ -218,19 +378,20 @@ class ShoppingGraph:
                 blocked_reason="Your Shopy Agent is disabled in Profile → Agent controls.",
             )
 
-        intent = state["intent"]
+        categories = state.get("category_slugs", [])
         allowlist = controls.category_allowlist
-        if intent.category is not None and allowlist and intent.category not in allowlist:
+        if categories and allowlist and not set(categories).intersection(allowlist):
             return ShoppingGraphState(
                 effective_limit=0,
                 controls_applied=True,
                 allowed_categories=allowlist,
                 blocked_reason=(
-                    f"{intent.category.value.title()} is outside your saved category allowlist. "
+                    f"{', '.join(categories)} is outside your saved category allowlist. "
                     "Update it in Profile → Agent controls."
                 ),
             )
 
+        intent = state["intent"]
         ceilings = [
             value
             for value in (
@@ -248,172 +409,313 @@ class ShoppingGraph:
             controls_applied=True,
         )
 
-    async def _search_catalog(self, state: ShoppingGraphState) -> ShoppingGraphState:
-        if state.get("intent_mode") == "OTHER":
-            return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
-        if state.get("blocked_reason"):
-            return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
-        intent = state["intent"]
-        if self._forced_product_id is not None:
-            product = await self._repository.get_active(self._forced_product_id)
-            if product is None:
-                return ShoppingGraphState(candidates=[], evaluated_count=0, eligible_count=0)
-            allowed = state.get("allowed_categories")
+    def _route_after_controls(
+        self, state: ShoppingGraphState
+    ) -> Literal["retrieve", "compose"]:
+        if (
+            state.get("blocked_reason")
+            or state.get("clarification")
+            or state.get("intent_mode") == "OTHER"
+        ):
+            return "compose"
+        return "retrieve"
+
+    async def _retrieve_catalogue(
+        self, state: ShoppingGraphState
+    ) -> ShoppingGraphState:
+        forced_product_id = state.get("forced_product_id")
+        if forced_product_id is not None:
+            product = await self._repository.get_active(forced_product_id)
+            intent = state["intent"]
+            allowed = state.get("allowed_categories", [])
             eligible = (
-                product.in_stock
+                product is not None
+                and product.in_stock
                 and (not allowed or product.category in allowed)
                 and (
                     intent.max_price_paise is None
                     or product.offer_price_paise <= intent.max_price_paise
                 )
-                and product.id not in self._excluded_product_ids
+                and product.id not in state.get("excluded_product_ids", [])
             )
-            candidates = [CatalogProduct.model_validate(product)] if eligible else []
+            hits = (
+                [AgentCatalogHit(product=product, relevance=100.0, matched_terms=[])]
+                if eligible and product is not None
+                else []
+            )
+            result = AgentCatalogResult(
+                hits=hits,
+                diagnostics=AgentCatalogDiagnostics(
+                    total_in_stock=1 if product is not None and product.in_stock else 0,
+                    category_matches=1 if product is not None else 0,
+                    text_matches=1 if product is not None else 0,
+                    eligible_matches=len(hits),
+                    lowest_matching_price_paise=(
+                        product.offer_price_paise if product is not None else None
+                    ),
+                    reason="MATCHES_FOUND" if hits else "NO_ELIGIBLE_PRODUCT",
+                    applied_categories=[product.category] if product is not None else [],
+                    applied_query=state.get("search_query", ""),
+                ),
+            )
+        else:
+            result = await self._repository.search_agent_catalog(
+                query=state.get("search_query", ""),
+                category_slugs=state.get("category_slugs", []),
+                allowed_categories=state.get("allowed_categories"),
+                max_price_paise=state["intent"].max_price_paise,
+                limit=MAX_RETRIEVAL_CANDIDATES,
+                exclude_product_ids=state.get("excluded_product_ids", []),
+            )
+
+        by_id: dict[UUID, AgentCatalogHit] = {
+            hit.product.id: hit for hit in state.get("accumulated_hits", [])
+        }
+        for hit in result.hits:
+            existing = by_id.get(hit.product.id)
+            if existing is None or hit.relevance > existing.relevance:
+                by_id[hit.product.id] = hit
+        accumulated = sorted(
+            by_id.values(),
+            key=lambda hit: (-hit.relevance, hit.product.title.casefold()),
+        )[:MAX_RETRIEVAL_CANDIDATES]
+        passes = state.get("retrieval_passes", 0) + 1
+        return ShoppingGraphState(
+            search_result=result,
+            accumulated_hits=accumulated,
+            retrieval_passes=passes,
+        )
+
+    async def _evaluate_results(
+        self, state: ShoppingGraphState
+    ) -> ShoppingGraphState:
+        hits = state.get("accumulated_hits", [])
+        if state.get("forced_product_id") is not None:
+            evaluation = RetrievalEvaluation(
+                action="FINAL" if hits else "NO_MATCH",
+                relevant_product_ids=[hit.product.id for hit in hits[:1]],
+                revised_search_query=None,
+                revised_category_slugs=[],
+                additional_soft_preferences=[],
+                clarification_question=None,
+                explanation=(
+                    "The explicitly referenced product passed current catalogue and policy checks."
+                    if hits
+                    else "The explicitly referenced product is no longer eligible."
+                ),
+            )
+            return ShoppingGraphState(evaluation=evaluation)
+
+        if self._llm_gateway is None:
             return ShoppingGraphState(
-                candidates=candidates,
-                evaluated_count=1,
-                eligible_count=len(candidates),
+                blocked_reason=(
+                    "The Agent's reasoning service became unavailable before it could evaluate "
+                    "catalogue results. No product or payment action was selected."
+                )
             )
-        products = await self._repository.search_agent_candidates(
-            category=intent.category,
-            allowed_categories=state.get("allowed_categories"),
-            max_price_paise=intent.max_price_paise,
-            limit=100,
-            exclude_product_ids=self._excluded_product_ids,
-        )
-        candidates = [CatalogProduct.model_validate(product) for product in products]
-        return ShoppingGraphState(
-            candidates=candidates,
-            evaluated_count=len(candidates),
-            eligible_count=len(candidates),
-        )
 
-    def _rank_shortlist(self, state: ShoppingGraphState) -> ShoppingGraphState:
-        intent = state["intent"]
-        preference_tokens = _preference_tokens(" ".join([intent.query, *intent.preferences]))
-        ranked = [
-            _score_candidate(product, intent, preference_tokens)
-            for product in state.get("candidates", [])
+        result = state["search_result"]
+        try:
+            raw = await self._llm_gateway.evaluate_catalogue(
+                understanding=state["understanding"].model_dump(mode="json"),
+                search_plan=_search_plan_payload(state),
+                candidates=[_evaluation_candidate(hit) for hit in hits],
+                diagnostics=_diagnostics_payload(result.diagnostics),
+                json_schema=RetrievalEvaluation.model_json_schema(),
+            )
+            evaluation = RetrievalEvaluation.model_validate(raw)
+        except (LLMProviderError, ValidationError):
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The Agent could not safely evaluate the catalogue results. "
+                    "No recommendation, order, or payment action was created. Please try again."
+                )
+            )
+
+        available_ids = {hit.product.id for hit in hits}
+        if not set(evaluation.relevant_product_ids).issubset(available_ids):
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The Agent selected a product outside the verified catalogue results. "
+                    "No product or payment action was accepted."
+                )
+            )
+        known_categories = {category.slug for category in state.get("taxonomy", [])}
+        revised_categories = evaluation.revised_category_slugs
+        if not set(revised_categories).issubset(known_categories):
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The Agent attempted an unknown catalogue category. "
+                    "No product or payment action was accepted."
+                )
+            )
+        allowed_categories = state.get("allowed_categories", [])
+        if revised_categories and allowed_categories and not set(
+            revised_categories
+        ).issubset(allowed_categories):
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The Agent attempted to search outside your saved category allowlist. "
+                    "No product or payment action was accepted."
+                )
+            )
+        if evaluation.action == "FINAL" and not evaluation.relevant_product_ids:
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The Agent did not return a verified finalist. No product or payment action "
+                    "was created."
+                )
+            )
+
+        updates = ShoppingGraphState(evaluation=evaluation)
+        if evaluation.action == "CLARIFY":
+            updates["clarification"] = AgentClarification(
+                kind="REQUIREMENTS",
+                question=evaluation.clarification_question
+                or "Could you clarify which requirement matters most?",
+                options=[],
+            )
+        elif evaluation.action == "REFINE":
+            next_query = (
+                evaluation.revised_search_query or state.get("search_query", "")
+            )
+            next_categories = (
+                revised_categories or state.get("category_slugs", [])
+            )
+            next_preferences = list(
+                dict.fromkeys(
+                    [
+                        *state.get("soft_preferences", []),
+                        *evaluation.additional_soft_preferences,
+                    ]
+                )
+            )[:12]
+            plan_key = _plan_key(next_query, next_categories, next_preferences)
+            current_key = _plan_key(
+                state.get("search_query", ""),
+                state.get("category_slugs", []),
+                state.get("soft_preferences", []),
+            )
+            seen = state.get("seen_plan_keys", [])
+            if plan_key == current_key or plan_key in seen:
+                updates["evaluation"] = evaluation.model_copy(
+                    update={
+                        "action": "NO_MATCH",
+                        "explanation": (
+                            "The proposed refinement repeated an already evaluated search."
+                        ),
+                    }
+                )
+            else:
+                updates["search_query"] = next_query
+                updates["category_slugs"] = next_categories
+                updates["soft_preferences"] = next_preferences
+                updates["seen_plan_keys"] = [*seen, current_key]
+                intent = state["intent"]
+                updates["intent"] = intent.model_copy(
+                    update={
+                        "query": next_query,
+                        "category": next_categories[0] if next_categories else None,
+                        "preferences": list(
+                            dict.fromkeys(
+                                [*state.get("hard_requirements", []), *next_preferences]
+                            )
+                        )[:16],
+                    }
+                )
+        return updates
+
+    def _route_after_evaluation(
+        self, state: ShoppingGraphState
+    ) -> Literal["retrieve", "compare", "compose"]:
+        if state.get("blocked_reason") or state.get("clarification"):
+            return "compose"
+        evaluation = state.get("evaluation")
+        if evaluation is None:
+            return "compose"
+        if (
+            evaluation.action == "REFINE"
+            and state.get("retrieval_passes", 0) < MAX_RETRIEVAL_PASSES
+        ):
+            return "retrieve"
+        if evaluation.action == "FINAL" and evaluation.relevant_product_ids:
+            return "compare"
+        return "compose"
+
+    async def _compare_products(
+        self, state: ShoppingGraphState
+    ) -> ShoppingGraphState:
+        evaluation = state["evaluation"]
+        hits_by_id = {
+            hit.product.id: hit for hit in state.get("accumulated_hits", [])
+        }
+        selected_hits = [
+            hits_by_id[product_id]
+            for product_id in evaluation.relevant_product_ids[:MAX_FINALISTS]
+            if product_id in hits_by_id
         ]
-        ranked.sort(key=lambda recommendation: _recommendation_sort_key(recommendation, intent))
-        shortlist = ranked[:8]
-        return ShoppingGraphState(
-            shortlist=shortlist,
-            recommendations=shortlist[: state.get("effective_limit", state["request"].limit)],
-        )
-
-    async def _search_complements(self, state: ShoppingGraphState) -> ShoppingGraphState:
-        if not self._cross_sell_allowed:
-            return ShoppingGraphState(complementary_candidates=[])
-        shortlist = state.get("shortlist", [])
+        shortlist = [_recommendation_from_hit(hit, state["intent"]) for hit in selected_hits]
         if not shortlist:
-            return ShoppingGraphState(complementary_candidates=[])
-        primary_categories = {item.product.category for item in shortlist}
-        configured_categories = state.get("allowed_categories") or list(ProductCategory)
-        complementary_categories = [
-            category for category in configured_categories if category not in primary_categories
-        ]
-        if not complementary_categories:
-            return ShoppingGraphState(complementary_candidates=[])
-
-        intent = state["intent"]
-        products = await self._repository.search_agent_candidates(
-            category=None,
-            allowed_categories=complementary_categories,
-            max_price_paise=intent.max_price_paise,
-            limit=8,
-        )
-        complement_intent = intent.model_copy(update={"category": None})
-        preference_tokens = _preference_tokens(
-            " ".join([complement_intent.query, *complement_intent.preferences])
-        )
-        ranked = [
-            _score_candidate(
-                CatalogProduct.model_validate(product),
-                complement_intent,
-                preference_tokens,
+            return ShoppingGraphState(
+                blocked_reason=(
+                    "The verified catalogue shortlist became unavailable. "
+                    "No product or payment action was created."
+                )
             )
-            for product in products
-        ]
-        ranked.sort(key=lambda recommendation: _recommendation_sort_key(recommendation, intent))
-        return ShoppingGraphState(complementary_candidates=ranked[:5])
 
-    async def _compare_products(self, state: ShoppingGraphState) -> ShoppingGraphState:
-        primary = state.get("shortlist", [])
-        complementary = state.get("complementary_candidates", [])
-        if not primary:
-            return ShoppingGraphState()
-
-        if self._exact_match:
-            exact = primary[0]
+        if state.get("exact_match"):
+            exact = shortlist[0]
             decision = AgentProductDecision(
                 selected_product_id=exact.product.id,
-                ranked_product_ids=[item.product.id for item in primary],
+                ranked_product_ids=[item.product.id for item in shortlist],
                 winner_reason=(
-                    f"{exact.product.title} is the exact in-stock catalogue model requested."
+                    f"{exact.product.title} is the exact catalogue product selected from this session."
                 ),
                 tradeoffs=[],
                 upsell_product_id=None,
                 upsell_reason=None,
-                cross_sell_product_id=(
-                    complementary[0].product.id if self._cross_sell_allowed and complementary else None
-                ),
-                cross_sell_reason=(
-                    "An optional product from another eligible category."
-                    if self._cross_sell_allowed and complementary
-                    else None
-                ),
+                cross_sell_product_id=None,
+                cross_sell_reason=None,
                 decision_source="deterministic",
             )
         elif self._llm_gateway is None:
-            decision = _fallback_decision(primary, complementary, source="deterministic")
+            return ShoppingGraphState(
+                shortlist=shortlist,
+                blocked_reason=(
+                    "The Agent's comparison service is unavailable. "
+                    "No product or payment action was selected."
+                ),
+            )
         else:
-            candidate_payload = [
-                _comparison_candidate(item.product, role="primary") for item in primary
-            ] + [
-                _comparison_candidate(item.product, role="complementary")
-                for item in complementary
-            ]
             try:
-                raw_decision = await self._llm_gateway.compare_products(
+                raw = await self._llm_gateway.compare_products(
                     user_text=state["request"].message,
-                    intent=state["intent"].model_dump(mode="json"),
-                    candidates=candidate_payload,
+                    intent={
+                        "understanding": state["understanding"].model_dump(mode="json"),
+                        "effective_intent": state["intent"].model_dump(mode="json"),
+                    },
+                    candidates=[
+                        _comparison_candidate(item.product, role="primary")
+                        for item in shortlist
+                    ],
                     json_schema=ProductComparisonDecision.model_json_schema(),
                 )
-                provider_decision = ProductComparisonDecision.model_validate(raw_decision)
+                provider_decision = ProductComparisonDecision.model_validate(raw)
                 decision = _validate_decision(
                     provider_decision,
-                    primary,
-                    complementary,
+                    shortlist,
                     source="openrouter",
                 )
             except (LLMProviderError, ValidationError, ValueError):
-                decision = _fallback_decision(
-                    primary,
-                    complementary,
-                    source="deterministic_fallback",
+                return ShoppingGraphState(
+                    shortlist=shortlist,
+                    blocked_reason=(
+                        "The Agent could not complete a grounded comparison of the verified "
+                        "products. No order or payment action was created. Please try again."
+                    ),
                 )
 
-        decision = decision.model_copy(
-            update={
-                "winner_reason": _humanize_money_text(decision.winner_reason),
-                "tradeoffs": [
-                    _humanize_money_text(value) for value in decision.tradeoffs
-                ],
-                "upsell_reason": (
-                    _humanize_money_text(decision.upsell_reason)
-                    if decision.upsell_reason is not None
-                    else None
-                ),
-                "cross_sell_reason": (
-                    _humanize_money_text(decision.cross_sell_reason)
-                    if decision.cross_sell_reason is not None
-                    else None
-                ),
-            }
-        )
-        ordered = _ordered_primary_recommendations(primary, decision)
+        ordered = _ordered_recommendations(shortlist, decision)
         effective_limit = state.get("effective_limit", state["request"].limit)
         return ShoppingGraphState(
             decision=decision,
@@ -422,69 +724,63 @@ class ShoppingGraph:
         )
 
     def _compose_response(self, state: ShoppingGraphState) -> ShoppingGraphState:
+        intent = state.get(
+            "intent",
+            ShoppingIntent(query="", category=None, max_price_paise=None, preferences=[]),
+        )
+        intent_mode = state.get("intent_mode", "RECOMMEND")
+        intent_source = state.get("intent_source", "deterministic_fallback")
         recommendations = state.get("recommendations", [])
-        primary = state.get("shortlist", [])
-        complementary = state.get("complementary_candidates", [])
-        intent = state["intent"]
-        intent_source = state["intent_source"]
+        shortlist = state.get("shortlist", [])
         decision = state.get("decision")
-        controls_applied = state.get("controls_applied", False)
+        clarification = state.get("clarification")
+        blocked_reason = state.get("blocked_reason")
+        search_result = state.get("search_result")
+        diagnostics = search_result.diagnostics if search_result else None
 
         winner: AgentRecommendation | None = None
-        upsell: AgentRecommendation | None = None
-        cross_sell: AgentRecommendation | None = None
         if decision is not None:
-            primary_by_id = {item.product.id: item for item in primary}
-            complementary_by_id = {item.product.id: item for item in complementary}
-            winner = _with_decision_reason(
-                primary_by_id[decision.selected_product_id], decision.winner_reason
-            )
-            if decision.upsell_product_id is not None:
-                upsell = _with_decision_reason(
-                    primary_by_id[decision.upsell_product_id],
-                    decision.upsell_reason or "A higher-fit eligible alternative",
-                )
-            if decision.cross_sell_product_id is not None:
-                cross_sell = _with_decision_reason(
-                    complementary_by_id[decision.cross_sell_product_id],
-                    decision.cross_sell_reason or "A complementary eligible product",
-                )
+            by_id = {item.product.id: item for item in shortlist}
+            selected = by_id.get(decision.selected_product_id)
+            if selected is not None:
+                winner = _with_decision_reason(selected, decision.winner_reason)
 
-        intent_mode = state.get("intent_mode", "RECOMMEND")
-        blocked_reason = state.get("blocked_reason")
-        if intent_mode == "OTHER":
-            reply = (
-                "I can help you discover, compare, or buy products from the Shopy catalogue. "
-                "Tell me what you want and any budget or features that matter."
-            )
+        if clarification is not None:
+            reply = clarification.question
+            outcome = "CLARIFICATION"
+            resolution_kind = "CLARIFICATION_REQUIRED"
         elif blocked_reason:
             reply = blocked_reason
-        elif winner is not None and decision is not None and self._exact_match:
+            outcome = "BLOCKED"
+            resolution_kind = "NO_MATCH"
+        elif intent_mode == "OTHER":
             reply = (
-                f"{winner.product.title} is the exact in-stock catalogue model you requested "
-                f"at {_format_inr(winner.product.offer_price_paise)}."
+                "I can discover, compare, or buy products from Shopy's live catalogue. "
+                "Tell me what you need, how you will use it, and any budget or preferences."
             )
+            outcome = "NO_MATCH"
+            resolution_kind = "NO_MATCH"
         elif winner is not None and decision is not None:
-            factual_reasons = "; ".join(winner.reasons[:2])
+            action = "selected" if intent_mode == "BUY" else "recommend"
             reply = (
-                f"I recommend {winner.product.title} at "
-                f"{_format_inr(winner.product.offer_price_paise)}."
-                + (f" {factual_reasons}." if factual_reasons else "")
+                f"I {action} {winner.product.title} at "
+                f"{_format_inr(winner.product.offer_price_paise)}. "
+                f"{decision.winner_reason}"
+            )
+            outcome = "RECOMMENDATIONS"
+            resolution_kind = (
+                "EXACT_MATCH" if state.get("exact_match") else "ALTERNATIVES"
             )
         else:
-            reply = (
-                "I could not find an in-stock product matching those requirements. "
-                "You can adjust the model, category, or budget."
-            )
+            reply = _no_match_reply(diagnostics, intent)
+            outcome = "NO_MATCH"
+            resolution_kind = "NO_MATCH"
 
-        resolution_kind = (
-            "EXACT_MATCH"
-            if winner is not None and self._exact_match
-            else "ALTERNATIVES"
-            if winner is not None
-            else "NO_MATCH"
+        public_diagnostics = (
+            CatalogSearchDiagnostics(**_diagnostics_payload(diagnostics))
+            if diagnostics is not None
+            else None
         )
-        outcome = "BLOCKED" if blocked_reason else "RECOMMENDATIONS" if winner else "NO_MATCH"
         return ShoppingGraphState(
             response=AgentChatResponse(
                 reply=reply,
@@ -495,21 +791,136 @@ class ShoppingGraph:
                 recommendations=recommendations,
                 winner=winner,
                 decision=decision,
-                upsell=upsell,
-                cross_sell=cross_sell,
-                account_controls_applied=controls_applied,
+                upsell=None,
+                cross_sell=None,
+                account_controls_applied=state.get("controls_applied", False),
                 notice="",
                 outcome=outcome,
                 resolution_kind=resolution_kind,
+                clarification=clarification,
                 focus_product_id=winner.product.id if winner else None,
-                exact_match=winner is not None and self._exact_match,
-                evaluated_count=state.get("evaluated_count", 0),
-                eligible_count=state.get("eligible_count", 0),
-                cross_sell_consent_required=(
-                    winner is not None and not self._cross_sell_allowed
-                ),
+                exact_match=winner is not None and bool(state.get("exact_match")),
+                evaluated_count=diagnostics.total_in_stock if diagnostics else 0,
+                eligible_count=diagnostics.eligible_matches if diagnostics else 0,
+                cross_sell_consent_required=False,
+                retrieval_passes=state.get("retrieval_passes", 0),
+                search_diagnostics=public_diagnostics,
             )
         )
+
+
+def _previous_intent(context: dict[str, object]) -> ShoppingIntent | None:
+    value = context.get("intent")
+    if not isinstance(value, dict):
+        return None
+    try:
+        return ShoppingIntent.model_validate(value)
+    except ValueError:
+        return None
+
+
+def _reference_clarification(
+    question: str, products: list[CatalogProduct]
+) -> AgentClarification:
+    return AgentClarification(
+        kind="REFERENCE",
+        question=question,
+        options=[
+            ClarificationOption(product_id=product.id, label=product.title)
+            for product in products[:4]
+        ],
+    )
+
+
+def _compact_product(product: CatalogProduct) -> dict[str, object]:
+    return {
+        "product_id": str(product.id),
+        "title": product.title,
+        "brand": product.brand,
+        "model": product.model,
+        "category": product.category,
+        "price_inr": product.offer_price_paise // 100,
+    }
+
+
+def _evaluation_candidate(hit: AgentCatalogHit) -> dict[str, object]:
+    product = hit.product
+    return {
+        "product_id": str(product.id),
+        "title": product.title,
+        "brand": product.brand,
+        "model": product.model,
+        "category": product.category,
+        "price_inr": product.offer_price_paise // 100,
+        "description": product.description[:400],
+        "specifications": product.specifications,
+        "search_tags": product.search_tags,
+        "matched_terms": hit.matched_terms,
+        "retrieval_relevance": round(hit.relevance, 4),
+    }
+
+
+def _search_plan_payload(state: ShoppingGraphState) -> dict[str, object]:
+    return {
+        "query": state.get("search_query", ""),
+        "category_slugs": state.get("category_slugs", []),
+        "maximum_price_inr": (
+            state["intent"].max_price_paise // 100
+            if state["intent"].max_price_paise is not None
+            else None
+        ),
+        "hard_requirements": state.get("hard_requirements", []),
+        "soft_preferences": state.get("soft_preferences", []),
+        "excluded_product_ids": [
+            str(product_id) for product_id in state.get("excluded_product_ids", [])
+        ],
+        "retrieval_pass": state.get("retrieval_passes", 0),
+        "maximum_retrieval_passes": MAX_RETRIEVAL_PASSES,
+    }
+
+
+def _diagnostics_payload(
+    diagnostics: AgentCatalogDiagnostics,
+) -> dict[str, object]:
+    return {
+        "total_in_stock": diagnostics.total_in_stock,
+        "category_matches": diagnostics.category_matches,
+        "text_matches": diagnostics.text_matches,
+        "eligible_matches": diagnostics.eligible_matches,
+        "lowest_matching_price_paise": diagnostics.lowest_matching_price_paise,
+        "reason": diagnostics.reason,
+        "applied_categories": diagnostics.applied_categories,
+        "applied_query": diagnostics.applied_query,
+    }
+
+
+def _plan_key(query: str, categories: list[str], preferences: list[str]) -> str:
+    return "|".join(
+        [
+            " ".join(query.casefold().split()),
+            ",".join(sorted(categories)),
+            ",".join(sorted(preferences)),
+        ]
+    )
+
+
+def _recommendation_from_hit(
+    hit: AgentCatalogHit, intent: ShoppingIntent
+) -> AgentRecommendation:
+    reasons: list[str] = []
+    if hit.matched_terms:
+        reasons.append(f"Catalogue match: {', '.join(hit.matched_terms[:4])}")
+    if intent.category is not None and hit.product.category == intent.category:
+        reasons.append(f"Matches the {intent.category} category")
+    if intent.max_price_paise is not None:
+        reasons.append(f"Within the {_format_inr(intent.max_price_paise)} maximum")
+    reasons.append(f"Verified in stock: {hit.product.inventory_quantity} available")
+    score = max(1, min(100, round(60 + min(hit.relevance, 4.0) * 10)))
+    return AgentRecommendation(
+        product=CatalogProduct.model_validate(hit.product),
+        score=score,
+        reasons=reasons[:6],
+    )
 
 
 def _comparison_candidate(product: CatalogProduct, *, role: str) -> dict[str, object]:
@@ -519,12 +930,11 @@ def _comparison_candidate(product: CatalogProduct, *, role: str) -> dict[str, ob
         "sku": product.sku,
         "brand": product.brand,
         "model": product.model,
-        "category": product.category.value,
+        "category": product.category,
         "title": product.title,
         "description": product.description,
-        "offer_price_paise": product.offer_price_paise,
-        "offer_price_inr": _format_inr(product.offer_price_paise),
-        "mrp_paise": product.mrp_paise,
+        "offer_price_inr": product.offer_price_paise / 100,
+        "mrp_inr": product.mrp_paise / 100 if product.mrp_paise else None,
         "inventory_quantity": product.inventory_quantity,
         "specifications": product.specifications,
         "search_tags": product.search_tags,
@@ -536,14 +946,12 @@ def _comparison_candidate(product: CatalogProduct, *, role: str) -> dict[str, ob
 def _validate_decision(
     decision: ProductComparisonDecision,
     primary: list[AgentRecommendation],
-    complementary: list[AgentRecommendation],
     *,
     source: AgentDecisionSource,
 ) -> AgentProductDecision:
     primary_ids = {item.product.id for item in primary}
-    complementary_ids = {item.product.id for item in complementary}
     if decision.selected_product_id not in primary_ids:
-        raise ValueError("The model selected an unknown or non-primary product")
+        raise ValueError("The model selected an unknown product")
 
     ranked_ids: list[UUID] = [decision.selected_product_id]
     for product_id in decision.ranked_product_ids:
@@ -556,222 +964,71 @@ def _validate_decision(
     upsell_id = decision.upsell_product_id
     if upsell_id not in primary_ids or upsell_id == decision.selected_product_id:
         upsell_id = None
-    cross_sell_id = decision.cross_sell_product_id
-    if cross_sell_id not in complementary_ids:
-        cross_sell_id = None
-
     return AgentProductDecision(
         selected_product_id=decision.selected_product_id,
-        ranked_product_ids=ranked_ids[:8],
+        ranked_product_ids=ranked_ids[:MAX_FINALISTS],
         winner_reason=decision.winner_reason,
         tradeoffs=decision.tradeoffs,
         upsell_product_id=upsell_id,
         upsell_reason=decision.upsell_reason if upsell_id is not None else None,
-        cross_sell_product_id=cross_sell_id,
-        cross_sell_reason=decision.cross_sell_reason if cross_sell_id is not None else None,
+        cross_sell_product_id=None,
+        cross_sell_reason=None,
         decision_source=source,
     )
 
 
-def _fallback_decision(
-    primary: list[AgentRecommendation],
-    complementary: list[AgentRecommendation],
-    *,
-    source: AgentDecisionSource,
-) -> AgentProductDecision:
-    winner = primary[0]
-    upsell = next(
-        (
-            item
-            for item in primary[1:]
-            if item.product.offer_price_paise > winner.product.offer_price_paise
-        ),
-        primary[1] if len(primary) > 1 else None,
-    )
-    cross_sell = complementary[0] if complementary else None
-    return AgentProductDecision(
-        selected_product_id=winner.product.id,
-        ranked_product_ids=[item.product.id for item in primary],
-        winner_reason=(
-            f"{winner.product.title} is the closest in-stock match for what you asked for."
-        ),
-        tradeoffs=[],
-        upsell_product_id=upsell.product.id if upsell else None,
-        upsell_reason="A higher-end option worth a look." if upsell else None,
-        cross_sell_product_id=cross_sell.product.id if cross_sell else None,
-        cross_sell_reason="Pairs well with your pick." if cross_sell else None,
-        decision_source=source,
-    )
-
-
-def _ordered_primary_recommendations(
-    primary: list[AgentRecommendation],
-    decision: AgentProductDecision,
+def _ordered_recommendations(
+    primary: list[AgentRecommendation], decision: AgentProductDecision
 ) -> list[AgentRecommendation]:
     by_id = {item.product.id: item for item in primary}
-    return [by_id[product_id] for product_id in decision.ranked_product_ids]
+    return [
+        by_id[product_id]
+        for product_id in decision.ranked_product_ids
+        if product_id in by_id
+    ]
 
 
 def _with_decision_reason(
-    recommendation: AgentRecommendation,
-    reason: str,
+    recommendation: AgentRecommendation, reason: str
 ) -> AgentRecommendation:
-    reasons = [reason, *recommendation.reasons]
-    return recommendation.model_copy(update={"reasons": reasons[:6]})
-
-
-def _fallback_intent_mode(message: str) -> AgentIntentMode:
-    normalized = " ".join(message.casefold().split())
-    buy_phrases = (
-        "buy me",
-        "order me",
-        "get me",
-        "buy this",
-        "buy it",
-        "order this",
-        "order it",
-        "purchase this",
-        "purchase it",
-        "place an order",
-        "i want to buy",
-        "can you buy",
-    )
-    if normalized.startswith(("buy ", "order ", "purchase ")) or any(
-        phrase in normalized for phrase in buy_phrases
-    ):
-        return "BUY"
-    return "RECOMMEND"
-
-
-def _merge_previous_intent(
-    current: ShoppingIntent,
-    previous: ShoppingIntent | None,
-) -> ShoppingIntent:
-    if previous is None:
-        return current
-    return ShoppingIntent(
-        query=current.query or previous.query,
-        category=current.category or previous.category,
-        max_price_paise=current.max_price_paise or previous.max_price_paise,
-        preferences=current.preferences or previous.preferences,
+    return recommendation.model_copy(
+        update={"reasons": [reason, *recommendation.reasons][:6]}
     )
 
 
-def _parse_deterministic_intent(request: AgentChatRequest) -> ShoppingIntent:
-    normalized = request.message.casefold()
-    detected_category = request.category or _detect_category(normalized)
-    max_price_paise = request.max_price_paise or _extract_max_price_paise(normalized)
-    preferences = _preference_tokens(normalized)
-    return ShoppingIntent(
-        query=" ".join(preferences),
-        category=detected_category,
-        max_price_paise=max_price_paise,
-        preferences=preferences,
-    )
-
-
-def _detect_category(text: str) -> ProductCategory | None:
-    tokens = set(_TOKEN_PATTERN.findall(text))
-    for category, aliases in _CATEGORY_ALIASES.items():
-        if tokens & aliases:
-            return category
-    return None
-
-
-def _extract_max_price_paise(text: str) -> int | None:
-    match = _PRICE_PATTERN.search(text)
-    if match is None:
-        return None
-    try:
-        amount = Decimal(match.group(1).replace(",", ""))
-    except InvalidOperation:
-        return None
-    suffix = (match.group(2) or "").casefold()
-    multiplier = {
-        "": Decimal(1),
-        "k": Decimal(1_000),
-        "thousand": Decimal(1_000),
-        "lakh": Decimal(100_000),
-        "lac": Decimal(100_000),
-    }[suffix]
-    paise = int(amount * multiplier * 100)
-    return paise if 0 < paise <= 1_000_000_000 else None
-
-
-def _preference_tokens(text: str) -> list[str]:
-    tokens: list[str] = []
-    without_price = _PRICE_PATTERN.sub(" ", text.casefold())
-    for token in _TOKEN_PATTERN.findall(without_price):
-        if token in _STOP_WORDS or token.isdigit() or len(token) < 2:
-            continue
-        if token not in tokens:
-            tokens.append(token)
-    return tokens[:12]
-
-
-def _recommendation_sort_key(
-    recommendation: AgentRecommendation,
-    intent: ShoppingIntent,
-) -> tuple[int, int, str]:
-    price = recommendation.product.offer_price_paise
-    # The ceiling is a hard constraint. Among equally relevant products, prefer
-    # the strongest available use of that budget instead of the cheapest item.
-    price_order = intent.max_price_paise - price if intent.max_price_paise is not None else price
-    return (-recommendation.score, price_order, recommendation.product.title.casefold())
-
-
-def _score_candidate(
-    product: CatalogProduct,
-    intent: ShoppingIntent,
-    preference_tokens: list[str],
-) -> AgentRecommendation:
-    score = 30
-    reasons: list[str] = []
-
-    if intent.category is not None and product.category == intent.category:
-        score += 20
-        reasons.append(f"Matches the {intent.category.value} category")
-
-    title_tokens = set(
-        _TOKEN_PATTERN.findall(
-            f"{product.brand} {product.model} {product.title} {product.description}".casefold()
+def _no_match_reply(
+    diagnostics: AgentCatalogDiagnostics | None, intent: ShoppingIntent
+) -> str:
+    if diagnostics is None:
+        return (
+            "I could not complete a verified catalogue search for that request. "
+            "No product, order, or payment action was created."
         )
+    if diagnostics.reason == "OVER_BUDGET" and diagnostics.lowest_matching_price_paise:
+        budget = (
+            _format_inr(intent.max_price_paise)
+            if intent.max_price_paise is not None
+            else "your maximum"
+        )
+        return (
+            f"I found relevant in-stock products, but none fit {budget}. "
+            f"The lowest matching price is {_format_inr(diagnostics.lowest_matching_price_paise)}. "
+            "I will not raise your budget without your permission."
+        )
+    if diagnostics.reason == "NO_CATEGORY_MATCH":
+        return (
+            "The live catalogue has no in-stock products in the requested category under the "
+            "current account controls. No order or payment action was created."
+        )
+    if diagnostics.reason == "NO_TEXT_MATCH":
+        return (
+            "I searched the complete live catalogue but found no product matching that need. "
+            "Try describing the use case differently or tell me which requirement can change."
+        )
+    return (
+        "I searched the complete live catalogue but found no in-stock product satisfying the "
+        "current requirements and limits. No order or payment action was created."
     )
-    tag_tokens = set(_TOKEN_PATTERN.findall(" ".join(product.search_tags).casefold()))
-    matched = [token for token in preference_tokens if token in title_tokens or token in tag_tokens]
-    if matched:
-        score += min(30, len(matched) * 8)
-        reasons.append(f"Matches: {', '.join(matched[:3])}")
-
-    if intent.max_price_paise is not None:
-        score += 10
-        reasons.append(f"Within the {_format_inr(intent.max_price_paise)} ceiling")
-
-    if product.mrp_paise is not None and product.mrp_paise > product.offer_price_paise:
-        discount = round((1 - product.offer_price_paise / product.mrp_paise) * 100)
-        reasons.append(f"{discount}% below listed MRP")
-
-    reasons.append(f"In stock: {product.inventory_quantity} available")
-    if not matched and intent.category is None:
-        reasons.insert(0, "Eligible active catalogue match")
-
-    return AgentRecommendation(
-        product=product,
-        score=min(score, 100),
-        reasons=reasons[:6],
-    )
-
-
-_PAISE_TEXT_PATTERN = re.compile(r"\b([0-9][0-9,]*)\s*paise\b", re.IGNORECASE)
-
-
-def _humanize_money_text(value: str) -> str:
-    def replace_paise(match: re.Match[str]) -> str:
-        paise = int(match.group(1).replace(",", ""))
-        rupees, remainder = divmod(paise, 100)
-        return f"₹{rupees:,}" if remainder == 0 else f"₹{rupees:,}.{remainder:02d}"
-
-    return _PAISE_TEXT_PATTERN.sub(replace_paise, value)
 
 
 def _format_inr(paise: int) -> str:

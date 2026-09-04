@@ -291,7 +291,7 @@ async def update_agent_controls(
         controls.per_purchase_limit_paise = payload.per_purchase_limit_paise
         controls.daily_spend_limit_paise = payload.daily_spend_limit_paise
         controls.monthly_spend_limit_paise = payload.monthly_spend_limit_paise
-        controls.category_allowlist = [category.value for category in payload.category_allowlist]
+        controls.category_allowlist = list(payload.category_allowlist)
         controls.max_recommendations = payload.max_recommendations
         await session.commit()
         return _controls_response(controls)

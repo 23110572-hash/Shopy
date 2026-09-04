@@ -7,6 +7,7 @@ import {
   fetchAccountProfile,
   fetchAgentControls,
   fetchCatalog,
+  fetchCatalogCategories,
   fetchHealth,
   reconcileCheckoutPayment,
   sendAgentChat,
@@ -25,6 +26,7 @@ import type {
   AgentChatResponse,
   AppPage,
   CartItem,
+  CatalogCategorySummary,
   CatalogPage,
   CatalogProduct,
   HealthStatus,
@@ -34,27 +36,19 @@ import type {
 } from './types'
 
 const CART_STORAGE_KEY = 'shopy-cart-v1'
-const productCategories: readonly ProductCategory[] = [
-  'smartphones',
-  'speakers',
-  'headphones',
-  'laptops',
-  'tablets',
-]
-const categories: Array<{ id: ProductCategory | 'all'; label: string; glyph: React.ReactNode }> = [
-  { id: 'all', label: 'All products', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg> },
-  { id: 'smartphones', label: 'Phones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
-  { id: 'speakers', label: 'Speakers', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><circle cx="12" cy="14" r="4" /><line x1="12" y1="6" x2="12.01" y2="6" /></svg> },
-  { id: 'headphones', label: 'Headphones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg> },
-  { id: 'laptops', label: 'Laptops', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="21" x2="22" y2="21" /></svg> },
-  { id: 'tablets', label: 'Tablets', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
-]
-const categoryGlyphs: Record<ProductCategory, React.ReactNode> = {
+const CATEGORY_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const allProductsGlyph = <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
+const genericCategoryGlyph = <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z" /><path d="m4 7.5 8 4.5 8-4.5M12 12v9" /></svg>
+const categoryGlyphs: Record<string, React.ReactNode> = {
   smartphones: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg>,
   speakers: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><circle cx="12" cy="14" r="4" /><line x1="12" y1="6" x2="12.01" y2="6" /></svg>,
   headphones: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg>,
   laptops: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="21" x2="22" y2="21" /></svg>,
   tablets: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg>,
+}
+
+function categoryGlyph(category: ProductCategory): React.ReactNode {
+  return categoryGlyphs[category] ?? genericCategoryGlyph
 }
 
 type IconName = 'home' | 'cart' | 'profile' | 'sparkles' | 'send' | 'close' | 'check'
@@ -89,7 +83,9 @@ function isCatalogProduct(value: unknown): value is CatalogProduct {
     typeof product.model === 'string' &&
     typeof product.title === 'string' &&
     typeof product.description === 'string' &&
-    productCategories.includes(product.category as ProductCategory) &&
+    typeof product.category === 'string' &&
+    product.category.length <= 40 &&
+    CATEGORY_SLUG_PATTERN.test(product.category) &&
     typeof product.offer_price_paise === 'number' &&
     (product.mrp_paise === null || typeof product.mrp_paise === 'number') &&
     typeof product.inventory_quantity === 'number' &&
@@ -191,7 +187,7 @@ function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (prod
         <CatalogImage
           product={product}
           imgClassName="product-image"
-          fallback={<span className="visual-glyph" aria-hidden="true">{categoryGlyphs[product.category]}</span>}
+          fallback={<span className="visual-glyph" aria-hidden="true">{categoryGlyph(product.category)}</span>}
         />
         <span className="brand-chip">{product.brand}</span>
         {discount > 0 ? <span className="discount-chip">−{discount}%</span> : null}
@@ -233,6 +229,31 @@ interface HomeProps {
 }
 
 function HomeView({ catalog, query, category, loading, error, onQuery, onCategory, onAdd, onAgent }: HomeProps) {
+  const [catalogCategories, setCatalogCategories] = useState<CatalogCategorySummary[]>([])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    fetchCatalogCategories(controller.signal)
+      .then((response) => setCatalogCategories(response.items))
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === 'AbortError') return
+        setCatalogCategories([])
+      })
+    return () => controller.abort()
+  }, [])
+
+  const categoryNavigation = useMemo(
+    () => [
+      { id: 'all' as const, label: 'All products', glyph: allProductsGlyph },
+      ...catalogCategories.map((item) => ({
+        id: item.slug,
+        label: item.display_name,
+        glyph: categoryGlyph(item.slug),
+      })),
+    ],
+    [catalogCategories],
+  )
+
   return (
     <main className="page home-page">
       <section className="catalog-section" id="catalog">
@@ -244,7 +265,7 @@ function HomeView({ catalog, query, category, loading, error, onQuery, onCategor
           </label>
         </div>
         <div className="category-list" role="list" aria-label="Product categories">
-          {categories.map((item) => <button type="button" key={item.id} className={category === item.id ? 'category-button selected' : 'category-button'} onClick={() => onCategory(item.id)}><span>{item.glyph}</span><strong>{item.label}</strong></button>)}
+          {categoryNavigation.map((item) => <button type="button" key={item.id} className={category === item.id ? 'category-button selected' : 'category-button'} onClick={() => onCategory(item.id)}><span>{item.glyph}</span><strong>{item.label}</strong></button>)}
         </div>
         <div className="results-bar"><span>{loading ? 'Refreshing live products…' : 'Products'}</span><span>Merchant inventory · INR pricing</span></div>
         {error ? <div className="state-card error"><strong>Catalogue unavailable</strong><p>{error}</p></div> : null}
@@ -306,7 +327,7 @@ function CartView({
           <div className="cart-list">
             {cart.map(({ product, quantity }) => (
               <article className="cart-row" key={product.id}>
-                <div className={`cart-art visual-${product.category}`}><CatalogImage product={product} imgClassName="cart-image" fallback={categoryGlyphs[product.category]} /></div>
+                <div className={`cart-art visual-${product.category}`}><CatalogImage product={product} imgClassName="cart-image" fallback={categoryGlyph(product.category)} /></div>
                 <div className="cart-info"><span>{product.brand} · {product.category}</span><h2>{product.title}</h2><p>{formatPrice(product.offer_price_paise)} each · {product.inventory_quantity} currently in stock</p><button type="button" onClick={() => onRemove(product.id)}>Remove</button></div>
                 <div className="quantity-control"><button type="button" onClick={() => onQuantity(product.id, quantity - 1)} aria-label="Decrease quantity">−</button><span>{quantity}</span><button type="button" onClick={() => onQuantity(product.id, quantity + 1)} disabled={quantity >= product.inventory_quantity} aria-label="Increase quantity">+</button></div>
                 <strong className="line-total">{formatPrice(product.offer_price_paise * quantity)}</strong>
@@ -527,7 +548,7 @@ function FloatingAgent({ open, onOpen, onAdd, locked }: { open: boolean; onOpen:
             {messages.map((message) => (
               <div className={`chat-message ${message.role}`} key={message.id}>
                 <div className="chat-bubble">{message.text}</div>
-                {message.response ? <><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}><CatalogImage product={recommendation.product} imgClassName="result-image" fallback={categoryGlyphs[recommendation.product.category]} /></div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div>{message.response.purchase_proposal ? <ProposalCheckout proposal={message.response.purchase_proposal} /> : null}{message.response.notice ? <small className="agent-notice">{message.response.notice}</small> : null}</> : null}
+                {message.response ? <><div className="agent-results">{message.response.recommendations.map((recommendation) => <article key={recommendation.product.id}><div className={`result-art visual-${recommendation.product.category}`}><CatalogImage product={recommendation.product} imgClassName="result-image" fallback={categoryGlyph(recommendation.product.category)} /></div><div><span>{recommendation.product.brand} · {recommendation.score}/100</span><strong>{recommendation.product.title}</strong><small>{recommendation.reasons.slice(0, 2).join(' · ')}</small><b>{formatPrice(recommendation.product.offer_price_paise)}</b></div><button type="button" onClick={() => onAdd(recommendation.product)} aria-label={`Add ${recommendation.product.title} to cart`}>+</button></article>)}</div>{message.response.purchase_proposal ? <ProposalCheckout proposal={message.response.purchase_proposal} /> : null}{message.response.notice ? <small className="agent-notice">{message.response.notice}</small> : null}</> : null}
               </div>
             ))}
             {busy ? <div className="agent-typing" aria-label="Shopy Agent is searching"><span /><span /><span /></div> : null}

@@ -1,9 +1,4 @@
-export type ProductCategory =
-  | 'smartphones'
-  | 'speakers'
-  | 'headphones'
-  | 'laptops'
-  | 'tablets'
+export type ProductCategory = string
 
 export type AppPage = 'home' | 'cart' | 'profile'
 
@@ -32,7 +27,27 @@ export interface CatalogPage {
   total: number
   limit: number
   offset: number
-  category_counts: Record<ProductCategory, number>
+  category_counts: Record<string, number>
+}
+
+export interface CatalogCategorySummary {
+  slug: ProductCategory
+  display_name: string
+  description: string
+  aliases: string[]
+  facet_definitions: Array<Record<string, unknown>>
+  active_product_count: number
+}
+export interface CatalogCategoryList { items: CatalogCategorySummary[] }
+export interface CatalogSearchDiagnostics {
+  total_in_stock: number
+  category_matches: number
+  text_matches: number
+  eligible_matches: number
+  lowest_matching_price_paise: number | null
+  reason: string
+  applied_categories: ProductCategory[]
+  applied_query: string
 }
 
 export interface ProviderHealth { provider: string; status: string; mode?: string }
@@ -50,6 +65,7 @@ export type AgentIntentSource = 'deterministic' | 'openrouter' | 'deterministic_
 export type AgentDecisionSource = AgentIntentSource
 export type AgentOutcome = 'RECOMMENDATIONS' | 'CLARIFICATION' | 'NO_MATCH' | 'BLOCKED' | 'CROSS_SELL_RESULTS'
 export type AgentResolutionKind = 'EXACT_MATCH' | 'ALTERNATIVES' | 'CLARIFICATION_REQUIRED' | 'NO_MATCH'
+export type AgentIntentMode = 'RECOMMEND' | 'BUY' | 'COMPARE' | 'REFINE' | 'OTHER'
 
 export interface ShoppingIntent {
   query: string
@@ -204,7 +220,9 @@ export interface AgentChatResponse {
   cross_sell_consent_required?: boolean
   replan_count?: number
   remaining_replans?: number
-  intent_mode: 'RECOMMEND' | 'BUY' | 'OTHER'
+  intent_mode: AgentIntentMode
+  retrieval_passes?: number
+  search_diagnostics?: CatalogSearchDiagnostics | null
 }
 
 export type ConversationStatus = 'ACTIVE' | 'CLOSED'

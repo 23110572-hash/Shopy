@@ -237,7 +237,7 @@ class OrderService:
                         title=product.title,
                         brand=product.brand,
                         model=product.model,
-                        category=product.category.value,
+                        category=product.category,
                         unit_amount_paise=product.offer_price_paise,
                         quantity=line.quantity,
                         line_total_paise=line_total,

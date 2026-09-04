@@ -29,7 +29,7 @@ from app.models.orders import (
     OrderStatus,
     PaymentMethod,
 )
-from app.models.product import Product, ProductCategory
+from app.models.product import CatalogCategory, Product
 from app.models.purchase_run import PurchaseRun
 from app.models.user import User, UserRole
 
@@ -42,6 +42,7 @@ __all__ = [
     "AuditEntry",
     "AuthSession",
     "Base",
+    "CatalogCategory",
     "CustomerOrder",
     "CustomerOrderItem",
     "DeliveryAddress",
@@ -52,7 +53,6 @@ __all__ = [
     "PaymentMethod",
     "PaymentStatus",
     "Product",
-    "ProductCategory",
     "ProviderOrderOperationState",
     "PurchaseQuote",
     "PurchaseReservation",

@@ -13,8 +13,8 @@ from pydantic import (
     model_validator,
 )
 
-from app.models.product import ProductCategory
 from app.models.user import UserRole
+from app.schemas.catalog import normalize_category_slug
 
 MAX_MONEY_PAISE = 1_000_000_000
 
@@ -130,13 +130,13 @@ class AgentControlsUpdate(BaseModel):
     per_purchase_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
     daily_spend_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
     monthly_spend_limit_paise: int | None = Field(default=None, gt=0, le=MAX_MONEY_PAISE)
-    category_allowlist: list[ProductCategory] = Field(default_factory=list, max_length=5)
+    category_allowlist: list[str] = Field(default_factory=list, max_length=100)
     max_recommendations: int = Field(default=4, ge=1, le=8)
 
     @field_validator("category_allowlist")
     @classmethod
-    def unique_categories(cls, values: list[ProductCategory]) -> list[ProductCategory]:
-        return list(dict.fromkeys(values))
+    def unique_categories(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(normalize_category_slug(value) for value in values))
 
     @model_validator(mode="after")
     def validate_spending_limits(self) -> "AgentControlsUpdate":

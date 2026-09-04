@@ -31,13 +31,13 @@ type SpeechCapableWindow = Window & typeof globalThis & {
 type MicrophonePermissionState = PermissionState | 'unknown'
 
 function speechErrorMessage(code: string, permission: MicrophonePermissionState): string {
-  if (code === 'service-not-allowed') return 'Your browser speech-recognition service is unavailable. Microphone permission is already separate; try Chrome or Edge, or type your message.'
+  if (code === 'service-not-allowed') return 'Your browser speech-recognition service is unavailable. Microphone permission is separate; try Chrome or Edge, or type your message.'
   if (code === 'not-allowed' && permission === 'denied') return 'Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.'
-  if (code === 'not-allowed' && permission === 'granted') return 'Microphone access is allowed, but the browser refused speech recognition. Click the mic again or check browser speech-service settings.'
-  if (code === 'not-allowed') return 'The browser did not allow speech recognition. Confirm the microphone prompt, then click the mic again.'
+  if (code === 'not-allowed' && permission === 'granted') return 'Microphone access is allowed, but the browser refused speech recognition. Check the browser speech-service settings or type your message.'
+  if (code === 'not-allowed') return 'The browser did not allow speech recognition. Confirm the microphone permission and try again.'
   if (code === 'no-speech') return 'No speech was detected. Please try again.'
   if (code === 'audio-capture') return 'No working microphone was found.'
-  if (code === 'network') return 'Speech recognition is temporarily unavailable.'
+  if (code === 'network') return 'The browser speech-recognition service is temporarily unavailable.'
   return 'Speech recognition could not understand that. Please try again.'
 }
 
@@ -52,15 +52,57 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
   const [listening, setListening] = useState(false)
   const [requestingMic, setRequestingMic] = useState(false)
   const endRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
   const speechRef = useRef<BrowserSpeechRecognition | null>(null)
   const microphoneReadyRef = useRef(false)
   const microphonePermissionRef = useRef<MicrophonePermissionState>('unknown')
 
+  function focusComposer() {
+    window.requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
+  function stopSpeechRecognition() {
+    const recognition = speechRef.current
+    if (recognition) {
+      recognition.onresult = null
+      recognition.onerror = null
+      recognition.onend = null
+      recognition.abort()
+      speechRef.current = null
+    }
+    setListening(false)
+    setRequestingMic(false)
+  }
+
+  function resetVisibleSession() {
+    stopSpeechRecognition()
+    setTurns([])
+    setDraft('')
+    setProposal(null)
+    setError(null)
+    focusComposer()
+  }
+
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, busy])
+  useEffect(() => { if (!busy) focusComposer() }, [busy, current?.conversation_id])
   useEffect(() => {
-    if (!profile) { setConversations([]); setCurrent(null); return }
+    if (!profile) {
+      setConversations([])
+      setCurrent(null)
+      resetVisibleSession()
+      return
+    }
     const controller = new AbortController()
-    fetchAgentConversations(controller.signal).then((result) => { setConversations(result.items); if (result.items[0]) void openConversation(result.items[0].conversation_id) }).catch((reason: unknown) => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Conversations are unavailable.') })
+    fetchAgentConversations(controller.signal).then((result) => {
+      setConversations(result.items)
+      if (result.items[0]) void openConversation(result.items[0].conversation_id)
+      else {
+        setCurrent(null)
+        resetVisibleSession()
+      }
+    }).catch((reason: unknown) => {
+      if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Conversations are unavailable.')
+    })
     return () => controller.abort()
   }, [profile?.id])
   useEffect(() => {
@@ -79,18 +121,11 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     }).catch(() => { microphonePermissionRef.current = 'unknown' })
     return () => { active = false; if (permissionStatus) permissionStatus.onchange = null }
   }, [])
-  useEffect(() => () => {
-    const recognition = speechRef.current
-    if (!recognition) return
-    recognition.onresult = null
-    recognition.onerror = null
-    recognition.onend = null
-    recognition.abort()
-    speechRef.current = null
-  }, [])
+  useEffect(() => () => { stopSpeechRecognition() }, [])
 
   async function openConversation(conversationId: string) {
-    setBusy(true); setError(null)
+    stopSpeechRecognition()
+    setBusy(true); setError(null); setDraft('')
     try {
       const detail = await fetchAgentConversation(conversationId); setCurrent(detail)
       const restored: ViewTurn[] = []
@@ -98,25 +133,43 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       setTurns(restored); setProposal([...detail.turns].reverse().find((turn) => turn.response.purchase_proposal)?.response.purchase_proposal ?? null)
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Conversation could not be opened.') } finally { setBusy(false) }
   }
+
   async function newConversation() {
-    if (!profile) { onSignIn(); return }
+    if (busy) return
+    if (!profile) {
+      setCurrent(null)
+      resetVisibleSession()
+      return
+    }
+    stopSpeechRecognition()
     setBusy(true); setError(null)
-    try { const created = await createAgentConversation(); setConversations((items) => [created, ...items]); setCurrent({ ...created, turns: [] }); setTurns([]); setProposal(null) }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Conversation could not be created.') } finally { setBusy(false) }
+    try {
+      const created = await createAgentConversation()
+      setConversations((items) => [created, ...items.filter((item) => item.conversation_id !== created.conversation_id)])
+      setCurrent({ ...created, turns: [] })
+      setTurns([]); setDraft(''); setProposal(null)
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Conversation could not be created.') } finally { setBusy(false) }
   }
+
   async function closeCurrent() {
-    if (!current) return
-    await closeAgentConversation(current.conversation_id); setConversations((items) => items.filter((item) => item.conversation_id !== current.conversation_id)); setCurrent(null); setTurns([]); setProposal(null)
+    if (!current || busy) return
+    setBusy(true); setError(null)
+    try {
+      await closeAgentConversation(current.conversation_id)
+      setConversations((items) => items.filter((item) => item.conversation_id !== current.conversation_id))
+      setCurrent(null)
+      resetVisibleSession()
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Conversation could not be closed.') } finally { setBusy(false) }
   }
 
   async function submit(message: string, extra: Partial<AgentChatRequest> = {}) {
     const text = message.trim(); if (!text || busy) return
-    const clientTurnId = id(); setTurns((items) => [...items, { id: `${clientTurnId}-u`, role: 'user', text }]); setDraft(''); setBusy(true); setError(null)
+    const clientTurnId = id(); setTurns((items) => [...items, { id: `${clientTurnId}-u`, role: 'user', text }]); setDraft(''); setProposal(null); setBusy(true); setError(null)
     const request: AgentChatRequest = { message: text, limit: 4, client_turn_id: clientTurnId, ...extra }
     if (profile && current) { request.conversation_id = current.conversation_id; request.expected_conversation_version = current.version }
     try {
       const response = await sendAgentChat(request); setTurns((items) => [...items, { id: response.turn_id ?? id(), role: 'agent', text: response.reply, response }])
-      if (response.purchase_proposal) setProposal(response.purchase_proposal)
+      setProposal(response.purchase_proposal ?? null)
       if (profile && response.conversation_id) {
         const detail = await fetchAgentConversation(response.conversation_id); setCurrent(detail)
         const list = await fetchAgentConversations(); setConversations(list.items)
@@ -127,7 +180,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     } finally { setBusy(false) }
   }
 
-  async function requestMicrophoneAccess() {
+  async function requestMicrophoneAccess(SpeechRecognition: BrowserSpeechRecognitionConstructor) {
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setError('Microphone access requires HTTPS and a browser with media-device support.')
       return
@@ -143,13 +196,15 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       stream.getTracks().forEach((track) => track.stop())
       microphoneReadyRef.current = true
       microphonePermissionRef.current = 'granted'
-      setError('Microphone is allowed. Click the mic again to speak.')
+      startSpeechRecognition(SpeechRecognition)
     } catch (reason) {
       if (reason instanceof DOMException && (reason.name === 'NotAllowedError' || reason.name === 'SecurityError')) {
         microphonePermissionRef.current = 'denied'
         setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
       } else if (reason instanceof DOMException && reason.name === 'NotFoundError') {
         setError('No working microphone was found.')
+      } else if (reason instanceof DOMException && reason.name === 'NotReadableError') {
+        setError('The microphone is busy in another application or could not be opened.')
       } else {
         setError('The browser could not open your microphone. Check the selected input device and try again.')
       }
@@ -192,7 +247,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     } catch {
       speechRef.current = null
       setListening(false)
-      setError('The microphone could not be started. Click the mic again or try Chrome or Edge.')
+      setError('The microphone could not be started. Try again in Chrome or Edge, or type your message.')
     }
   }
 
@@ -215,7 +270,12 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
       return
     }
-    void requestMicrophoneAccess()
+    void requestMicrophoneAccess(SpeechRecognition)
+  }
+
+  function chooseSuggestion(value: string) {
+    setDraft(value)
+    focusComposer()
   }
 
   function recommendationCards(response: AgentChatResponse) {
@@ -231,10 +291,10 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
   return <div className="agent-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <main className="agent-workspace agent-modal" role="dialog" aria-modal="true" aria-label="Shopy Agent">
       <button className="agent-modal-close" type="button" onClick={onClose} aria-label="Close Shopy Agent">×</button>
-      <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1><p>Exact catalogue resolution, policy-bounded recommendations, explicit address and Razorpay confirmation, with every decision recorded.</p></div><button className="agent-new-button" type="button" onClick={newConversation}>+ New session</button></header>
+      <header className="agent-workspace-head"><div><span className="section-label">GOVERNED AI BUYER</span><h1>Shopy Agent</h1></div><button className="agent-new-button" type="button" onClick={newConversation} disabled={busy}>+ New session</button></header>
       <div className="agent-layout">
-        <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
-        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => setDraft('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => setDraft('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{proposal ? <div className="agent-inline-checkout"><AgentCheckout proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></div> : null}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}${requestingMic ? ' requesting' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy || requestingMic} aria-label={requestingMic ? 'Requesting microphone access' : listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
+        <aside className="agent-sidebar"><div className="agent-panel-title"><span>Sessions</span>{current ? <button type="button" className="agent-text-button" onClick={closeCurrent} disabled={busy}>Close</button> : null}</div>{!profile && sessionChecked ? <div className="agent-empty-copy"><p>Guest search works, but sign in to save sessions and buy.</p><button type="button" onClick={onSignIn}>Sign in</button></div> : <div className="conversation-list">{conversations.map((conversation) => <button type="button" className={current?.conversation_id === conversation.conversation_id ? 'active' : ''} key={conversation.conversation_id} onClick={() => openConversation(conversation.conversation_id)} disabled={busy}><strong>{conversation.title}</strong><small>{conversation.last_message_preview ?? 'New conversation'}</small></button>)}</div>}</aside>
+        <section className="agent-thread"><div className="agent-messages-full" aria-live="polite">{turns.length === 0 ? <div className="agent-turn"><div className="agent-turn-bubble">Hello, I am Shopy. How can I help you?</div><div className="agent-recovery"><button type="button" onClick={() => chooseSuggestion('Find iPhone 16')}>Find iPhone 16</button><button type="button" onClick={() => chooseSuggestion('Wireless headphones under ₹20,000')}>Headphones under ₹20k</button></div></div> : null}{turns.map((turn) => <div className={`agent-turn ${turn.role}`} key={turn.id}><div className="agent-turn-bubble">{turn.text}</div>{turn.response ? recommendationCards(turn.response) : null}</div>)}{proposal ? <div className="agent-inline-checkout"><AgentCheckout key={proposal.proposal_id} proposal={proposal} signedIn={profile !== null} onSignIn={onSignIn} onRunChange={() => undefined}/></div> : null}{busy ? <div className="agent-typing-full">Checking live catalogue and policy…</div> : null}<div ref={endRef}/></div><form className="agent-composer" onSubmit={(event) => { event.preventDefault(); void submit(draft) }}><input ref={inputRef} value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={1000} placeholder="Ask for a product or say cheaper / another…"/><button className={`agent-mic${listening ? ' listening' : ''}${requestingMic ? ' requesting' : ''}`} type="button" onClick={toggleSpeechRecognition} disabled={busy || requestingMic} aria-label={requestingMic ? 'Requesting microphone access' : listening ? 'Stop listening' : 'Speak your message'} aria-pressed={listening}><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M9 21h6"/></svg></button><button className="agent-send" type="submit" disabled={!draft.trim() || busy} aria-label="Send message">→</button></form>{error ? <p className="agent-inline-error" style={{ padding: '0 18px 16px' }}>{error}</p> : null}</section>
       </div>
     </main>
   </div>
