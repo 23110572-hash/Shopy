@@ -3555,12 +3555,6 @@ p {
   }
 }
 
-.security-list article>span {
-  grid-column: 2;
-  justify-self: start;
-}
-}
-
 /* Agent purchase proposal / Razorpay Test Mode checkout */
 .proposal-checkout {
   display: grid;

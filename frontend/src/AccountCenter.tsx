@@ -38,6 +38,8 @@ type SessionState = 'loading' | 'guest' | 'authenticated'
 
 interface AccountCenterProps {
   health: HealthStatus | null
+  /** Lets the rest of the app react to sign-in and sign-out. */
+  onSession?: (profile: AccountProfile | null) => void
 }
 
 function formatDate(value: string | null): string {
@@ -64,11 +66,8 @@ function controlsPayload(controls: AgentControls): AgentControlsUpdate {
     per_purchase_limit_paise: controls.per_purchase_limit_paise,
     daily_spend_limit_paise: controls.daily_spend_limit_paise,
     monthly_spend_limit_paise: controls.monthly_spend_limit_paise,
-    approval_required_above_paise: controls.approval_required_above_paise,
     category_allowlist: controls.category_allowlist,
     max_recommendations: controls.max_recommendations,
-    max_replans: controls.max_replans,
-    allow_substitutions: controls.allow_substitutions,
   }
 }
 
@@ -175,7 +174,7 @@ function HistoryEmpty({ title, reason, kind }: { title: string; reason: string; 
   )
 }
 
-function AccountCenter({ health }: AccountCenterProps) {
+function AccountCenter({ health, onSession }: AccountCenterProps) {
   const [sessionState, setSessionState] = useState<SessionState>('loading')
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [activeTab, setActiveTab] = useState<AccountTab>('auth')
@@ -195,15 +194,18 @@ function AccountCenter({ health }: AccountCenterProps) {
         setProfile(account)
         setDisplayName(account.display_name)
         setSessionState('authenticated')
+        onSession?.(account)
+        setActiveTab((current) => current === 'auth' ? 'overview' : current)
       })
       .catch((error: unknown) => {
         if (error instanceof DOMException && error.name === 'AbortError') return
         // Do not show 'Failed to fetch' error banner to the user just because they are not logged in or API is offline
         setSessionState('guest')
+        onSession?.(null)
         setActiveTab('auth')
       })
     return () => controller.abort()
-  }, [])
+  }, [onSession])
 
   useEffect(() => {
     if (sessionState !== 'authenticated' || profile === null) return
@@ -271,6 +273,7 @@ function AccountCenter({ health }: AccountCenterProps) {
       setOrders(null)
       setTransactions(null)
       setSessionState('guest')
+      onSession?.(null)
       setActiveTab('auth')
     } catch (error) {
       setDataError(error instanceof Error ? error.message : 'Could not sign out.')
@@ -324,6 +327,7 @@ function AccountCenter({ health }: AccountCenterProps) {
               setProfile(account)
               setDisplayName(account.display_name)
               setSessionState('authenticated')
+              onSession?.(account)
               setActiveTab('overview')
             }} />
           ) : null}
@@ -342,8 +346,8 @@ function AccountCenter({ health }: AccountCenterProps) {
             <header><div><span>SHOPY AGENT POLICY</span><h2>Agent controls</h2><p>Set hard server-side limits applied before the live catalogue is searched.</p></div><label className="master-switch"><input type="checkbox" checked={draftControls?.agent_enabled ?? false} onChange={(event) => setDraftControls((current) => current ? { ...current, agent_enabled: event.target.checked } : current)} /><span /><b>{draftControls?.agent_enabled ? 'Agent on' : 'Agent off'}</b></label></header>
             {draftControls ? <form onSubmit={saveControls}>
               <div className="control-section"><div className="control-section-title"><span>01</span><div><h3>Recommendation boundary</h3><p>These values actively constrain authenticated Shopy Agent results.</p></div></div><div className="control-grid"><MoneyInput label="Recommendation ceiling" hint="Never recommend products above this price." value={draftControls.recommendation_price_ceiling_paise} onChange={(value) => setDraftControls({ ...draftControls, recommendation_price_ceiling_paise: value })} /><label className="control-field"><span>Maximum recommendations</span><div className="range-value"><input type="range" min="1" max="8" value={draftControls.max_recommendations} onChange={(event) => setDraftControls({ ...draftControls, max_recommendations: Number(event.target.value) })} /><b>{draftControls.max_recommendations}</b></div><small>Maximum product cards returned per request.</small></label></div></div>
-              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Spending policy</h3><p>Saved now for policy enforcement; payment authority remains inactive.</p></div></div><div className="control-grid two-by-two"><MoneyInput label="Per-purchase limit" hint="Also caps recommended product price." value={draftControls.per_purchase_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, per_purchase_limit_paise: value })} /><MoneyInput label="Approval required above" hint="Future purchases above this need your approval." value={draftControls.approval_required_above_paise} onChange={(value) => setDraftControls({ ...draftControls, approval_required_above_paise: value })} /><MoneyInput label="Daily spending limit" hint="Maximum future authorized spend per day." value={draftControls.daily_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, daily_spend_limit_paise: value })} /><MoneyInput label="Monthly spending limit" hint="Maximum future authorized spend per month." value={draftControls.monthly_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, monthly_spend_limit_paise: value })} /></div><div className="authority-warning"><span>!</span><div><strong>Autonomous payment is not active</strong><p>{controls?.purchase_authority_notice ?? 'A saved preference is not permission to charge a payment method.'}</p></div><button type="button" disabled>Enable auto-pay</button></div></div>
-              <div className="control-section"><div className="control-section-title"><span>03</span><div><h3>Categories & behavior</h3><p>Leave every category unselected to allow the complete catalogue.</p></div></div><div className="category-policy">{categoryChoices.map((category) => { const selected = draftControls.category_allowlist.includes(category.id); return <button type="button" key={category.id} className={selected ? 'selected' : ''} onClick={() => setDraftControls({ ...draftControls, category_allowlist: selected ? draftControls.category_allowlist.filter((value) => value !== category.id) : [...draftControls.category_allowlist, category.id] })}><span>{category.glyph}</span><strong>{category.label}</strong><i>{selected ? '✓' : '+'}</i></button> })}</div><div className="behavior-row"><label><input type="checkbox" checked={draftControls.allow_substitutions} onChange={(event) => setDraftControls({ ...draftControls, allow_substitutions: event.target.checked })} /><span><strong>Allow substitutions</strong><small>Let future workflows consider another eligible model.</small></span></label><label><span><strong>Maximum replans</strong><small>Bound future candidate retries from 0 to 10.</small></span><select value={draftControls.max_replans} onChange={(event) => setDraftControls({ ...draftControls, max_replans: Number(event.target.value) })}>{Array.from({ length: 11 }, (_, value) => <option value={value} key={value}>{value}</option>)}</select></label></div></div>
+              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Spending limits</h3><p>Enforced when the agent takes you to Razorpay checkout.</p></div></div><div className="control-grid"><MoneyInput label="Per-purchase limit" hint="Blocks any single agent purchase above this, and caps recommendations." value={draftControls.per_purchase_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, per_purchase_limit_paise: value })} /><MoneyInput label="Daily spending limit" hint="Blocks agent checkout once the day's total would exceed this." value={draftControls.daily_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, daily_spend_limit_paise: value })} /><MoneyInput label="Monthly spending limit" hint="Blocks agent checkout once the month's total would exceed this." value={draftControls.monthly_spend_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, monthly_spend_limit_paise: value })} /></div><div className="authority-warning"><span>!</span><div><strong>The agent never pays on its own</strong><p>{controls?.purchase_authority_notice ?? 'Every purchase needs you to confirm it in Razorpay.'}</p></div></div></div>
+              <div className="control-section"><div className="control-section-title"><span>03</span><div><h3>Allowed categories</h3><p>Leave every category unselected to allow the complete catalogue.</p></div></div><div className="category-policy">{categoryChoices.map((category) => { const selected = draftControls.category_allowlist.includes(category.id); return <button type="button" key={category.id} className={selected ? 'selected' : ''} onClick={() => setDraftControls({ ...draftControls, category_allowlist: selected ? draftControls.category_allowlist.filter((value) => value !== category.id) : [...draftControls.category_allowlist, category.id] })}><span>{category.glyph}</span><strong>{category.label}</strong><i>{selected ? '✓' : '+'}</i></button> })}</div><small className="control-footnote">The agent only searches these categories, and checkout is blocked for anything outside them.</small></div>
               <div className="control-savebar"><div><span>Policy version {controls?.version ?? 1}</span><small>Limits are persisted to your Shopy account.</small></div><button type="submit" disabled={saveState === 'saving'}>{saveState === 'saving' ? 'Saving policy…' : saveState === 'saved' ? 'Saved ✓' : 'Save agent controls'}</button></div>
             </form> : <div className="panel-loading">Loading saved agent policy…</div>}
           </section> : null}
@@ -352,10 +356,6 @@ function AccountCenter({ health }: AccountCenterProps) {
         </div>
       </section>
     </main>
-  )
-}
-
-export default AccountCenter
   )
 }
 
