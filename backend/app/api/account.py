@@ -305,7 +305,7 @@ async def get_order_history(
     async with database.session() as session:
         orders = await CommerceRepository(session).list_orders_for_buyer(principal.user.id)
     items: list[OrderHistoryItem] = []
-    for order in orders:
+    for order, quote in orders:
         provider_order_id = order.provider_order_id
         provider_status = order.provider_status
         if (
@@ -319,6 +319,13 @@ async def get_order_history(
                 order_id=order.id,
                 run_id=order.purchase_run_id,
                 quote_id=order.quote_id,
+                product_id=quote.product_id,
+                product_title=quote.title,
+                product_brand=quote.brand,
+                product_model=quote.model,
+                product_sku=quote.sku,
+                product_category=quote.category,
+                quantity=quote.quantity,
                 provider_order_id=provider_order_id,
                 status=provider_status,
                 operation_state=order.operation_state,
@@ -347,6 +354,14 @@ async def get_transaction_history(
             transaction_id=payment.id,
             run_id=payment.purchase_run_id,
             order_id=payment.razorpay_order_id,
+            quote_id=quote.id,
+            product_id=quote.product_id,
+            product_title=quote.title,
+            product_brand=quote.brand,
+            product_model=quote.model,
+            product_sku=quote.sku,
+            product_category=quote.category,
+            quantity=quote.quantity,
             provider_payment_id=payment.provider_payment_id,
             provider_order_id=payment.provider_order_id,
             status=payment.status,
@@ -361,7 +376,7 @@ async def get_transaction_history(
             created_at=payment.created_at,
             updated_at=payment.updated_at,
         )
-        for payment in payments
+        for payment, quote in payments
     ]
     return TransactionHistoryResponse(
         items=items,

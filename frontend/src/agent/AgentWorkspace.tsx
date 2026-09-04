@@ -28,8 +28,13 @@ type SpeechCapableWindow = Window & typeof globalThis & {
   webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor
 }
 
-function speechErrorMessage(code: string): string {
-  if (code === 'not-allowed' || code === 'service-not-allowed') return 'Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.'
+type MicrophonePermissionState = PermissionState | 'unknown'
+
+function speechErrorMessage(code: string, permission: MicrophonePermissionState): string {
+  if (code === 'service-not-allowed') return 'Your browser speech-recognition service is unavailable. Microphone permission is already separate; try Chrome or Edge, or type your message.'
+  if (code === 'not-allowed' && permission === 'denied') return 'Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.'
+  if (code === 'not-allowed' && permission === 'granted') return 'Microphone access is allowed, but the browser refused speech recognition. Click the mic again or check browser speech-service settings.'
+  if (code === 'not-allowed') return 'The browser did not allow speech recognition. Confirm the microphone prompt, then click the mic again.'
   if (code === 'no-speech') return 'No speech was detected. Please try again.'
   if (code === 'audio-capture') return 'No working microphone was found.'
   if (code === 'network') return 'Speech recognition is temporarily unavailable.'
@@ -49,6 +54,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
   const endRef = useRef<HTMLDivElement>(null)
   const speechRef = useRef<BrowserSpeechRecognition | null>(null)
   const microphoneReadyRef = useRef(false)
+  const microphonePermissionRef = useRef<MicrophonePermissionState>('unknown')
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [turns, busy])
   useEffect(() => {
@@ -57,6 +63,22 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     fetchAgentConversations(controller.signal).then((result) => { setConversations(result.items); if (result.items[0]) void openConversation(result.items[0].conversation_id) }).catch((reason: unknown) => { if (!(reason instanceof DOMException && reason.name === 'AbortError')) setError(reason instanceof Error ? reason.message : 'Conversations are unavailable.') })
     return () => controller.abort()
   }, [profile?.id])
+  useEffect(() => {
+    if (!navigator.permissions?.query) return
+    let active = true
+    let permissionStatus: PermissionStatus | null = null
+    void navigator.permissions.query({ name: 'microphone' as PermissionName }).then((status) => {
+      if (!active) return
+      permissionStatus = status
+      const syncPermission = () => {
+        microphonePermissionRef.current = status.state
+        microphoneReadyRef.current = status.state === 'granted'
+      }
+      syncPermission()
+      status.onchange = syncPermission
+    }).catch(() => { microphonePermissionRef.current = 'unknown' })
+    return () => { active = false; if (permissionStatus) permissionStatus.onchange = null }
+  }, [])
   useEffect(() => () => {
     const recognition = speechRef.current
     if (!recognition) return
@@ -105,11 +127,14 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     } finally { setBusy(false) }
   }
 
-  async function requestMicrophoneAccess(): Promise<boolean> {
-    if (microphoneReadyRef.current) return true
+  async function requestMicrophoneAccess() {
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       setError('Microphone access requires HTTPS and a browser with media-device support.')
-      return false
+      return
+    }
+    if (microphonePermissionRef.current === 'denied') {
+      setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
+      return
     }
     setRequestingMic(true)
     setError(null)
@@ -117,35 +142,23 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach((track) => track.stop())
       microphoneReadyRef.current = true
-      return true
+      microphonePermissionRef.current = 'granted'
+      setError('Microphone is allowed. Click the mic again to speak.')
     } catch (reason) {
       if (reason instanceof DOMException && (reason.name === 'NotAllowedError' || reason.name === 'SecurityError')) {
+        microphonePermissionRef.current = 'denied'
         setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
       } else if (reason instanceof DOMException && reason.name === 'NotFoundError') {
         setError('No working microphone was found.')
       } else {
-        setError('The browser could not open your microphone. Check the site permission and try again.')
+        setError('The browser could not open your microphone. Check the selected input device and try again.')
       }
-      return false
     } finally {
       setRequestingMic(false)
     }
   }
 
-  async function toggleSpeechRecognition() {
-    if (speechRef.current) {
-      speechRef.current.stop()
-      return
-    }
-
-    const speechWindow = window as SpeechCapableWindow
-    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      setError('Speech recognition is not supported in this browser. Try the latest Chrome or Edge.')
-      return
-    }
-    if (!await requestMicrophoneAccess()) return
-
+  function startSpeechRecognition(SpeechRecognition: BrowserSpeechRecognitionConstructor) {
     const recognition = new SpeechRecognition()
     let submitted = false
     recognition.lang = 'en-IN'
@@ -163,7 +176,7 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       void submit(transcript)
     }
     recognition.onerror = (event) => {
-      if (event.error !== 'aborted') setError(speechErrorMessage(event.error))
+      if (event.error !== 'aborted') setError(speechErrorMessage(event.error, microphonePermissionRef.current))
       setListening(false)
       if (speechRef.current === recognition) speechRef.current = null
     }
@@ -171,7 +184,6 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
       setListening(false)
       if (speechRef.current === recognition) speechRef.current = null
     }
-
     speechRef.current = recognition
     setError(null)
     try {
@@ -180,8 +192,30 @@ export default function AgentWorkspace({ profile, sessionChecked, onSignIn, onCl
     } catch {
       speechRef.current = null
       setListening(false)
-      setError('The microphone could not be started. Please try again.')
+      setError('The microphone could not be started. Click the mic again or try Chrome or Edge.')
     }
+  }
+
+  function toggleSpeechRecognition() {
+    if (speechRef.current) {
+      speechRef.current.stop()
+      return
+    }
+    const speechWindow = window as SpeechCapableWindow
+    const SpeechRecognition = speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition
+    if (!SpeechRecognition) {
+      setError('Speech recognition is not supported in this browser. Try the latest Chrome or Edge.')
+      return
+    }
+    if (microphonePermissionRef.current === 'granted' || microphoneReadyRef.current) {
+      startSpeechRecognition(SpeechRecognition)
+      return
+    }
+    if (microphonePermissionRef.current === 'denied') {
+      setError('Microphone is blocked for this site. Click the site-controls icon beside the address bar, set Microphone to Allow, then try again.')
+      return
+    }
+    void requestMicrophoneAccess()
   }
 
   function recommendationCards(response: AgentChatResponse) {

@@ -5,6 +5,7 @@ import {
   confirmCheckoutPayment,
   createCheckoutOrder,
   fetchAccountProfile,
+  fetchAgentControls,
   fetchCatalog,
   fetchHealth,
   reconcileCheckoutPayment,
@@ -194,7 +195,6 @@ function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (prod
         />
         <span className="brand-chip">{product.brand}</span>
         {discount > 0 ? <span className="discount-chip">−{discount}%</span> : null}
-        <i className="orbit orbit-one" /><i className="orbit orbit-two" />
       </div>
       <div className="product-content">
         <div className="product-kicker">
@@ -233,9 +233,6 @@ interface HomeProps {
 }
 
 function HomeView({ catalog, query, category, loading, error, onQuery, onCategory, onAdd, onAgent }: HomeProps) {
-  const productTotal = catalog?.category_counts
-    ? Object.values(catalog.category_counts).reduce((sum, count) => sum + count, 0)
-    : 0
   return (
     <main className="page home-page">
       <section className="catalog-section" id="catalog">
@@ -247,12 +244,9 @@ function HomeView({ catalog, query, category, loading, error, onQuery, onCategor
           </label>
         </div>
         <div className="category-list" role="list" aria-label="Product categories">
-          {categories.map((item) => {
-            const count = item.id === 'all' ? productTotal : (catalog?.category_counts[item.id] ?? 0)
-            return <button type="button" key={item.id} className={category === item.id ? 'category-button selected' : 'category-button'} onClick={() => onCategory(item.id)}><span>{item.glyph}</span><strong>{item.label}</strong><small>{count}</small></button>
-          })}
+          {categories.map((item) => <button type="button" key={item.id} className={category === item.id ? 'category-button selected' : 'category-button'} onClick={() => onCategory(item.id)}><span>{item.glyph}</span><strong>{item.label}</strong></button>)}
         </div>
-        <div className="results-bar"><span>{loading ? 'Refreshing live products…' : `${catalog?.total ?? 0} products`}</span><span>Merchant inventory · INR pricing</span></div>
+        <div className="results-bar"><span>{loading ? 'Refreshing live products…' : 'Products'}</span><span>Merchant inventory · INR pricing</span></div>
         {error ? <div className="state-card error"><strong>Catalogue unavailable</strong><p>{error}</p></div> : null}
         {!error && !loading && catalog?.items.length === 0 ? <div className="state-card"><strong>No matching products</strong><p>Try a broader search or another category.</p></div> : null}
         <div className={loading ? 'product-grid loading' : 'product-grid'}>
@@ -495,7 +489,7 @@ function ProposalCheckout({ proposal }: { proposal: PurchaseProposal }) {
   )
 }
 
-function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value: boolean) => void; onAdd: (product: CatalogProduct) => void }) {
+function FloatingAgent({ open, onOpen, onAdd, locked }: { open: boolean; onOpen: (value: boolean) => void; onAdd: (product: CatalogProduct) => void; locked: boolean }) {
   const [messages, setMessages] = useState<ChatMessage[]>([{ id: 'welcome', role: 'agent', text: 'Hi — I search the live Shopy catalogue. Tell me a category, feature, or budget.' }])
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
@@ -544,7 +538,7 @@ function FloatingAgent({ open, onOpen, onAdd }: { open: boolean; onOpen: (value:
           <footer>Live catalogue search <span>•</span> Razorpay Test Mode only</footer>
         </section>
       ) : null}
-      <button className="agent-launcher" type="button" onClick={() => onOpen(!open)} aria-label={open ? 'Close Shopy Agent' : 'Open Shopy Agent'} aria-expanded={open}>{open ? <Icon name="close" /> : <Icon name="sparkles" />}{!open ? <span className="launcher-pulse" /> : null}</button>
+      <button className={`agent-launcher${locked ? ' locked' : ''}`} type="button" onClick={() => { if (!locked) onOpen(!open) }} disabled={locked} title={locked ? 'Turn on Shopy Agent in Profile → Agent controls' : undefined} aria-label={locked ? 'Shopy Agent is off' : open ? 'Close Shopy Agent' : 'Open Shopy Agent'} aria-expanded={open}>{locked ? <span className="agent-lock" aria-hidden="true">🔒</span> : open ? <Icon name="close" /> : <Icon name="sparkles" />}{!open && !locked ? <span className="launcher-pulse" /> : null}</button>
     </aside>
   )
 }
@@ -562,6 +556,8 @@ function App() {
   const [toast, setToast] = useState<string | null>(null)
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [sessionChecked, setSessionChecked] = useState(false)
+  const [agentEnabled, setAgentEnabled] = useState<boolean | null>(null)
+  const agentLocked = sessionChecked && profile !== null && agentEnabled !== true
 
   useEffect(() => {
     const controller = new AbortController()
@@ -580,6 +576,29 @@ function App() {
       .finally(() => setSessionChecked(true))
     return () => controller.abort()
   }, [])
+
+  useEffect(() => {
+    if (!sessionChecked || profile === null) { setAgentEnabled(null); return }
+    const controller = new AbortController()
+    fetchAgentControls(controller.signal)
+      .then((saved) => setAgentEnabled(saved.agent_enabled))
+      .catch((requestError: unknown) => {
+        if (requestError instanceof DOMException && requestError.name === 'AbortError') return
+        setAgentEnabled(null)
+      })
+    return () => controller.abort()
+  }, [profile?.id, sessionChecked])
+
+  useEffect(() => {
+    if (agentLocked) setAgentOpen(false)
+  }, [agentLocked])
+
+  useEffect(() => {
+    if (!agentOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previousOverflow }
+  }, [agentOpen])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -609,6 +628,14 @@ function App() {
 
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart])
 
+  function setAgentVisibility(value: boolean) {
+    if (value && agentLocked) {
+      setToast('Shopy Agent is off. Turn it on in Profile → Agent controls.')
+      return
+    }
+    setAgentOpen(value)
+  }
+
   function navigate(next: AppPage) {
     setPage(next)
     window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -632,9 +659,9 @@ function App() {
   return (
     <div className="app-shell">
       <Navigation page={page} cartCount={cartCount} online={health?.database === 'ready'} onNavigate={navigate} />
-      {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => setAgentOpen(true)} /> : null}
+      {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => setAgentVisibility(true)} /> : null}
       {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} signedIn={profile !== null} sessionChecked={sessionChecked} /> : null}
-      {page === 'profile' ? <AccountCenter health={health} onSession={setProfile} /> : null}
+      {page === 'profile' ? <AccountCenter health={health} onSession={setProfile} onAgentEnabledChange={setAgentEnabled} /> : null}
       <footer className="site-footer">
         <button type="button" onClick={() => navigate('home')} aria-label="Shopy home">
           <img src={logoPng} alt="Shopy" className="footer-logo" />
@@ -642,8 +669,8 @@ function App() {
         <a href="https://shopy-zewo.onrender.com/docs" target="_blank" rel="noreferrer">API docs ↗</a>
       </footer>
       {toast ? <div className="cart-toast"><Icon name="check" />{toast}</div> : null}
-      {agentOpen ? <AgentWorkspace profile={profile} sessionChecked={sessionChecked} onSignIn={() => { setAgentOpen(false); navigate('profile') }} onClose={() => setAgentOpen(false)} /> : null}
-      <FloatingAgent open={false} onOpen={setAgentOpen} onAdd={addToCart} />
+      {agentOpen && !agentLocked ? <AgentWorkspace profile={profile} sessionChecked={sessionChecked} onSignIn={() => { setAgentOpen(false); navigate('profile') }} onClose={() => setAgentOpen(false)} /> : null}
+      <FloatingAgent open={false} onOpen={setAgentVisibility} onAdd={addToCart} locked={agentLocked} />
     </div>
   )
 }

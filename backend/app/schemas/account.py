@@ -166,6 +166,13 @@ class OrderHistoryItem(BaseModel):
     order_id: UUID
     run_id: UUID
     quote_id: UUID
+    product_id: UUID
+    product_title: str
+    product_brand: str
+    product_model: str
+    product_sku: str
+    product_category: str
+    quantity: int = Field(gt=0)
     provider_order_id: str
     provider: Literal["razorpay"] = "razorpay"
     status: str
@@ -181,6 +188,14 @@ class TransactionHistoryItem(BaseModel):
     transaction_id: UUID
     run_id: UUID
     order_id: UUID
+    quote_id: UUID
+    product_id: UUID
+    product_title: str
+    product_brand: str
+    product_model: str
+    product_sku: str
+    product_category: str
+    quantity: int = Field(gt=0)
     provider_payment_id: str
     provider_order_id: str
     provider: Literal["razorpay"] = "razorpay"

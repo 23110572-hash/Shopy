@@ -239,9 +239,10 @@ class CommerceRepository:
         buyer_user_id: UUID,
         *,
         limit: int = 100,
-    ) -> Sequence[RazorpayOrder]:
+    ) -> Sequence[tuple[RazorpayOrder, PurchaseQuote]]:
         result = await self._session.execute(
-            select(RazorpayOrder)
+            select(RazorpayOrder, PurchaseQuote)
+            .join(PurchaseQuote, PurchaseQuote.id == RazorpayOrder.quote_id)
             .join(PurchaseRun, PurchaseRun.id == RazorpayOrder.purchase_run_id)
             .where(
                 PurchaseRun.buyer_user_id == buyer_user_id,
@@ -252,22 +253,24 @@ class CommerceRepository:
             .order_by(RazorpayOrder.created_at.desc())
             .limit(limit)
         )
-        return result.scalars().all()
+        return [(order, quote) for order, quote in result.all()]
 
     async def list_payments_for_buyer(
         self,
         buyer_user_id: UUID,
         *,
         limit: int = 100,
-    ) -> Sequence[PaymentAttempt]:
+    ) -> Sequence[tuple[PaymentAttempt, PurchaseQuote]]:
         result = await self._session.execute(
-            select(PaymentAttempt)
+            select(PaymentAttempt, PurchaseQuote)
+            .join(RazorpayOrder, RazorpayOrder.id == PaymentAttempt.razorpay_order_id)
+            .join(PurchaseQuote, PurchaseQuote.id == RazorpayOrder.quote_id)
             .join(PurchaseRun, PurchaseRun.id == PaymentAttempt.purchase_run_id)
             .where(PurchaseRun.buyer_user_id == buyer_user_id)
             .order_by(PaymentAttempt.created_at.desc())
             .limit(limit)
         )
-        return result.scalars().all()
+        return [(payment, quote) for payment, quote in result.all()]
 
     async def list_audit_entries(
         self,

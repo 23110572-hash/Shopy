@@ -266,11 +266,15 @@ export interface AgentControls extends AgentControlsUpdate {
 
 export interface OrderHistoryItem {
   order_id: string; run_id: string; quote_id: string; provider_order_id: string
+  product_id: string; product_title: string; product_brand: string; product_model: string
+  product_sku: string; product_category: string; quantity: number
   provider: 'razorpay'; status: string; operation_state: string; amount_paise: number
   currency: 'INR'; attempts: number; created_at: string; updated_at: string
 }
 export interface TransactionHistoryItem {
   transaction_id: string; run_id: string; order_id: string; provider_payment_id: string
+  quote_id: string; product_id: string; product_title: string; product_brand: string
+  product_model: string; product_sku: string; product_category: string; quantity: number
   provider_order_id: string; provider: 'razorpay'; status: string; captured: boolean
   payment_method: string | null; error_code: string | null; error_description: string | null
   amount_paise: number; currency: 'INR'; provider_created_at: string | null
