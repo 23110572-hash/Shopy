@@ -72,8 +72,10 @@ export async function fetchAgentConversations(signal?: AbortSignal): Promise<Age
 export const fetchAgentConversation = (id: string, signal?: AbortSignal) => requestJson<AgentConversationDetail>(`/api/agent/conversations/${id}`, { signal })
 export const closeAgentConversation = (id: string) => requestJson<void>(`/api/agent/conversations/${id}`, { method: 'DELETE', headers: protectedHeaders() })
 export async function clearAgentHistory(): Promise<void> {
-  const result = await fetchAgentConversations()
-  await Promise.all(result.items.map((conversation) => closeAgentConversation(conversation.conversation_id)))
+  await requestJson<void>('/api/agent/conversations', {
+    method: 'DELETE',
+    headers: protectedHeaders(),
+  })
 }
 export const fetchAgentRuns = (signal?: AbortSignal) => requestJson<AgentRunHistoryResponse>('/api/account/runs', { signal })
 export const fetchRunAudit = (runId: string, signal?: AbortSignal) => requestJson<AuditHistoryResponse>(`/api/account/runs/${runId}/audit`, { signal })

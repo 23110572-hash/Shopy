@@ -20,17 +20,8 @@ import type {
   AgentControlsUpdate,
   HealthStatus,
   OrderHistoryResponse,
-  ProductCategory,
   TransactionHistoryResponse,
 } from './types'
-
-const categoryChoices: Array<{ id: ProductCategory; label: string; glyph: React.ReactNode }> = [
-  { id: 'smartphones', label: 'Phones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
-  { id: 'speakers', label: 'Speakers', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><circle cx="12" cy="14" r="4" /><line x1="12" y1="6" x2="12.01" y2="6" /></svg> },
-  { id: 'headphones', label: 'Headphones', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6" /><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" /></svg> },
-  { id: 'laptops', label: 'Laptops', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="2" y1="21" x2="22" y2="21" /></svg> },
-  { id: 'tablets', label: 'Tablets', glyph: <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect x="4" y="2" width="16" height="20" rx="2" ry="2" /><line x1="12" y1="18" x2="12.01" y2="18" /></svg> },
-]
 
 type AccountTab = 'auth' | 'overview' | 'orders' | 'transactions' | 'agent' | 'security'
 type AuthMode = 'login' | 'signup'
@@ -67,7 +58,7 @@ function controlsPayload(controls: AgentControls): AgentControlsUpdate {
     per_purchase_limit_paise: controls.per_purchase_limit_paise,
     daily_spend_limit_paise: controls.daily_spend_limit_paise,
     monthly_spend_limit_paise: controls.monthly_spend_limit_paise,
-    category_allowlist: controls.category_allowlist,
+    category_allowlist: [],
     max_recommendations: controls.max_recommendations,
   }
 }
@@ -349,7 +340,7 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
 
           {activeTab === 'overview' && profile ? <section className="account-panel overview-panel">
             <header><div><span>ACCOUNT OVERVIEW</span><h2>Your details</h2><p>Identity data stored in Shopy's account database.</p></div><b className={profile.is_active ? 'account-state active' : 'account-state'}>{profile.is_active ? 'Active' : 'Disabled'}</b></header>
-            <div className="overview-metrics"><article><span>▤</span><div><small>Orders</small><strong>{orders?.items.length ?? '—'}</strong><p>Provider-confirmed only</p></div></article><article><span>✦</span><div><small>Shopy Agent</small><strong>{controls?.agent_enabled ? 'On' : 'Off'}</strong><p>{controls?.category_allowlist.length ? `${controls.category_allowlist.length} allowed categories` : 'All catalogue categories'}</p></div></article><article><span>◇</span><div><small>Member since</small><strong>{formatDate(profile.created_at)}</strong><p>Database-backed account</p></div></article></div>
+            <div className="overview-metrics"><article><span>▤</span><div><small>Orders</small><strong>{orders?.items.length ?? '—'}</strong><p>Provider-confirmed only</p></div></article><article><span>✦</span><div><small>Shopy Agent</small><strong>{controls?.agent_enabled ? 'On' : 'Off'}</strong><p>Recommendation and direct-buy intent</p></div></article><article><span>◇</span><div><small>Member since</small><strong>{formatDate(profile.created_at)}</strong><p>Database-backed account</p></div></article></div>
             <form className="profile-details-form" onSubmit={saveProfile}><div className="panel-subheading"><div><span>PERSONAL DETAILS</span><h3>Account information</h3></div><button type="submit" disabled={profileSaving || displayName.trim() === profile.display_name}>{profileSaving ? 'Saving…' : 'Save changes'}</button></div><div className="details-grid"><label><span>Display name</span><input value={displayName} minLength={2} maxLength={120} onChange={(event) => setDisplayName(event.target.value)} /></label><label><span>Email address</span><input value={profile.email} disabled /><small>Email changes require a verified workflow.</small></label><label><span>Account role</span><input value={profile.role === 'buyer' ? 'Shopper' : 'Merchant administrator'} disabled /></label><label><span>Email status</span><input value={profile.email_verified ? 'Verified' : 'Not verified'} disabled /></label></div></form>
           </section> : null}
 
@@ -361,8 +352,7 @@ function AccountCenter({ health, onSession }: AccountCenterProps) {
             <header><div><span>SHOPY AGENT</span><h2>Agent controls</h2><p>Keep the Agent simple: turn it on, set one purchase limit, and choose categories.</p></div><label className="master-switch"><input type="checkbox" checked={draftControls?.agent_enabled ?? false} onChange={(event) => setDraftControls((current) => current ? { ...current, agent_enabled: event.target.checked } : current)} /><span /><b>{draftControls?.agent_enabled ? 'Agent on' : 'Agent off'}</b></label></header>
             {draftControls ? <form onSubmit={saveControls}>
               <div className="control-section"><div className="control-section-title"><span>01</span><div><h3>Purchase limit</h3><p>The maximum amount allowed for one direct Agent purchase.</p></div></div><div className="control-grid"><MoneyInput label="Maximum per purchase" hint="A direct Agent purchase above this amount is blocked before Razorpay opens." value={draftControls.per_purchase_limit_paise} onChange={(value) => setDraftControls({ ...draftControls, per_purchase_limit_paise: value })} /></div></div>
-              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Allowed categories</h3><p>Leave every category unselected to allow the complete catalogue.</p></div></div><div className="category-policy">{categoryChoices.map((category) => { const selected = draftControls.category_allowlist.includes(category.id); return <button type="button" key={category.id} className={selected ? 'selected' : ''} onClick={() => setDraftControls({ ...draftControls, category_allowlist: selected ? draftControls.category_allowlist.filter((value) => value !== category.id) : [...draftControls.category_allowlist, category.id] })}><span>{category.glyph}</span><strong>{category.label}</strong><i>{selected ? '✓' : '+'}</i></button> })}</div></div>
-              <div className="control-section"><div className="control-section-title"><span>03</span><div><h3>Agent history</h3><p>Clear saved chats and searches. Payment orders and audit records remain protected.</p></div></div><button className="security-signout" type="button" onClick={clearHistory} disabled={saveState === 'saving'}>{saveState === 'saving' ? 'Clearing…' : 'Clear all Agent history'}</button></div>
+              <div className="control-section"><div className="control-section-title"><span>02</span><div><h3>Agent history</h3><p>Clear saved chats and searches. Payment orders and audit records remain protected.</p></div></div><button className="security-signout" type="button" onClick={clearHistory} disabled={saveState === 'saving'}>{saveState === 'saving' ? 'Clearing…' : 'Clear all Agent history'}</button></div>
               <div className="control-savebar"><div><span>Policy version {controls?.version ?? 1}</span><small>Every direct purchase still requires your saved address and Razorpay confirmation.</small></div><button type="submit" disabled={saveState === 'saving'}>{saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Saved ✓' : 'Save controls'}</button></div>
             </form> : <div className="panel-loading">Loading Agent controls…</div>}
           </section> : null}

@@ -136,7 +136,6 @@ interface NavigationProps {
 function Navigation({ page, cartCount, online, onNavigate }: NavigationProps) {
   const links: Array<{ page: AppPage; label: string; icon: IconName }> = [
     { page: 'home', label: 'Home', icon: 'home' },
-    { page: 'agent', label: 'Agent', icon: 'sparkles' },
     { page: 'cart', label: 'Cart', icon: 'cart' },
     { page: 'profile', label: 'Profile', icon: 'profile' },
   ]

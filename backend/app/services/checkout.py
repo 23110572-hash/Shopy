@@ -1466,8 +1466,6 @@ def _policy_denial_reason(
         return "The Shopy Agent is disabled in account controls."
     if controls.currency != "INR" or quote.currency != "INR":
         return "Only INR purchases are permitted."
-    if controls.category_allowlist and quote.category not in controls.category_allowlist:
-        return "The selected category is outside the current account allowlist."
     if (
         controls.recommendation_price_ceiling_paise is not None
         and amount > controls.recommendation_price_ceiling_paise

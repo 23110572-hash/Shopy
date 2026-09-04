@@ -203,11 +203,6 @@ async def persist_purchase_proposal(
         ),
         policy_checks=[
             AgentPolicyCheck(
-                code="CATEGORY_ALLOWED",
-                outcome="ALLOWED",
-                explanation=f"{product.category.value.title()} is allowed by the current agent policy.",
-            ),
-            AgentPolicyCheck(
                 code="PRICE_WITHIN_LIMIT",
                 outcome="ALLOWED",
                 explanation="The quoted price is within the current recommendation and per-purchase limits.",

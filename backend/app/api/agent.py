@@ -4,6 +4,7 @@ from typing import Annotated, NoReturn
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import delete, select
 
 from app.agents.shopping_graph import ShoppingGraph
 from app.config import Settings
@@ -17,7 +18,6 @@ from app.models.conversation import (
     AgentConversationStatus,
     AgentConversationTurn,
 )
-from app.models.product import ProductCategory
 from app.repositories.accounts import AccountRepository
 from app.repositories.conversations import ConversationRepository
 from app.repositories.products import ProductRepository
@@ -55,7 +55,7 @@ def _controls(saved: ShoppingAgentControls) -> AgentRuntimeControls:
         per_purchase_limit_paise=saved.per_purchase_limit_paise,
         daily_spend_limit_paise=saved.daily_spend_limit_paise,
         monthly_spend_limit_paise=saved.monthly_spend_limit_paise,
-        category_allowlist=[ProductCategory(value) for value in saved.category_allowlist],
+        category_allowlist=[],
         max_recommendations=saved.max_recommendations,
         version=saved.version,
     )
@@ -171,6 +171,29 @@ async def get_conversation(
             **summary.model_dump(),
             turns=[_turn_response(turn) for turn in turns],
         )
+
+
+@router.delete("/conversations", status_code=204, response_class=Response)
+async def clear_conversations(
+    database: DatabaseDependency,
+    principal: CsrfPrincipalDependency,
+) -> Response:
+    async with database.session() as session:
+        conversation_ids = select(AgentConversation.id).where(
+            AgentConversation.user_id == principal.user.id
+        )
+        await session.execute(
+            delete(AgentConversationTurn).where(
+                AgentConversationTurn.conversation_id.in_(conversation_ids)
+            )
+        )
+        await session.execute(
+            delete(AgentConversation).where(
+                AgentConversation.user_id == principal.user.id
+            )
+        )
+        await session.commit()
+    return Response(status_code=204)
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204, response_class=Response)

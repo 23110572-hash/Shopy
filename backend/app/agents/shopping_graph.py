@@ -386,6 +386,24 @@ class ShoppingGraph:
                     source="deterministic_fallback",
                 )
 
+        decision = decision.model_copy(
+            update={
+                "winner_reason": _humanize_money_text(decision.winner_reason),
+                "tradeoffs": [
+                    _humanize_money_text(value) for value in decision.tradeoffs
+                ],
+                "upsell_reason": (
+                    _humanize_money_text(decision.upsell_reason)
+                    if decision.upsell_reason is not None
+                    else None
+                ),
+                "cross_sell_reason": (
+                    _humanize_money_text(decision.cross_sell_reason)
+                    if decision.cross_sell_reason is not None
+                    else None
+                ),
+            }
+        )
         ordered = _ordered_primary_recommendations(primary, decision)
         effective_limit = state.get("effective_limit", state["request"].limit)
         return ShoppingGraphState(
@@ -428,11 +446,16 @@ class ShoppingGraph:
             reply = blocked_reason
         elif winner is not None and decision is not None and self._exact_match:
             reply = (
-                f"{winner.product.title} is the exact catalogue model you requested, "
-                "is in stock, and passed your current agent limits."
+                f"{winner.product.title} is the exact in-stock catalogue model you requested "
+                f"at {_format_inr(winner.product.offer_price_paise)}."
             )
         elif winner is not None and decision is not None:
-            reply = decision.winner_reason
+            factual_reasons = "; ".join(winner.reasons[:2])
+            reply = (
+                f"I recommend {winner.product.title} at "
+                f"{_format_inr(winner.product.offer_price_paise)}."
+                + (f" {factual_reasons}." if factual_reasons else "")
+            )
         else:
             reply = (
                 "I could not find an in-stock product matching those requirements. "
@@ -484,6 +507,7 @@ def _comparison_candidate(product: CatalogProduct, *, role: str) -> dict[str, ob
         "title": product.title,
         "description": product.description,
         "offer_price_paise": product.offer_price_paise,
+        "offer_price_inr": _format_inr(product.offer_price_paise),
         "mrp_paise": product.mrp_paise,
         "inventory_quantity": product.inventory_quantity,
         "specifications": product.specifications,
@@ -689,5 +713,18 @@ def _score_candidate(
     )
 
 
+_PAISE_TEXT_PATTERN = re.compile(r"\b([0-9][0-9,]*)\s*paise\b", re.IGNORECASE)
+
+
+def _humanize_money_text(value: str) -> str:
+    def replace_paise(match: re.Match[str]) -> str:
+        paise = int(match.group(1).replace(",", ""))
+        rupees, remainder = divmod(paise, 100)
+        return f"₹{rupees:,}" if remainder == 0 else f"₹{rupees:,}.{remainder:02d}"
+
+    return _PAISE_TEXT_PATTERN.sub(replace_paise, value)
+
+
 def _format_inr(paise: int) -> str:
-    return f"₹{paise // 100:,}"
+    rupees, remainder = divmod(paise, 100)
+    return f"₹{rupees:,}" if remainder == 0 else f"₹{rupees:,}.{remainder:02d}"
