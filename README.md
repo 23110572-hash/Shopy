@@ -203,24 +203,35 @@ The core shopping intelligence is implemented as a bounded LangGraph workflow. L
 
 ```mermaid
 flowchart TD
-    START([Shopper message]) --> TAXONOMY[Load live catalogue taxonomy]
-    TAXONOMY --> UNDERSTAND[LLM: understand request]
-    UNDERSTAND --> CONTROLS[Apply account controls]
+    START([START]) --> LOAD["1 · load_catalogue_context<br/>Load taxonomy, product identities, and initial state"]
+    LOAD --> UNDERSTAND["2 · understand_request<br/>Resolve intent, references, and session constraints"]
+    UNDERSTAND --> CONTROLS["3 · apply_controls<br/>Enforce account controls, categories, and limits"]
 
-    CONTROLS -->|Greeting or conversation| COMPOSE[Compose response]
-    CONTROLS -->|Unsafe or blocked| COMPOSE
-    CONTROLS -->|Valid shopping intent| RETRIEVE[Search authoritative catalogue]
+    CONTROLS --> CONTROL_ROUTE{"_route_after_controls"}
+    CONTROL_ROUTE -->|"blocked · clarification · OTHER"| COMPOSE
+    CONTROL_ROUTE -->|"retrieve"| RETRIEVE["4 · retrieve_catalogue<br/>Search and filter the verified catalogue"]
 
-    RETRIEVE --> EVALUATE[LLM: evaluate bounded results]
-    EVALUATE -->|Refine query, max 3 passes| RETRIEVE
-    EVALUATE -->|Needs shopper clarification| COMPOSE
-    EVALUATE -->|No honest match| COMPOSE
-    EVALUATE -->|Verified finalists| COMPARE[LLM: compare supplied products]
+    RETRIEVE --> EVALUATE["5 · evaluate_results<br/>Validate, refine, or finalize results"]
+    EVALUATE --> EVALUATION_ROUTE{"_route_after_evaluation"}
+    EVALUATION_ROUTE -->|"REFINE · maximum 3 retrieval passes"| RETRIEVE
+    EVALUATION_ROUTE -->|"FINAL + verified product IDs"| COMPARE["6 · compare_products<br/>Rank finalists and safely select a winner"]
+    EVALUATION_ROUTE -->|"blocked · CLARIFY · NO_MATCH · exhausted"| COMPOSE
 
-    COMPARE --> VALIDATE[Validate IDs and decision]
-    VALIDATE --> COMPOSE
-    COMPOSE --> END([Typed Agent response])
+    COMPARE --> COMPOSE["7 · compose_response<br/>Build the typed AgentChatResponse"]
+    COMPOSE --> END([END])
+
+    classDef process fill:#172033,color:#f8fafc,stroke:#60a5fa,stroke-width:2px;
+    classDef control fill:#fef3c7,color:#78350f,stroke:#f59e0b,stroke-width:2px;
+    classDef response fill:#064e3b,color:#ecfdf5,stroke:#34d399,stroke-width:2px;
+    classDef terminal fill:#312e81,color:#eef2ff,stroke:#818cf8,stroke-width:2px;
+
+    class LOAD,UNDERSTAND,CONTROLS,RETRIEVE,EVALUATE,COMPARE process;
+    class CONTROL_ROUTE,EVALUATION_ROUTE control;
+    class COMPOSE response;
+    class START,END terminal;
 ```
+
+The diagram mirrors the implemented `StateGraph`: seven executable nodes, two conditional edge routers, one bounded refinement loop, and one terminal edge from `compose_response` to `END`.
 
 ### Graph stage 1 — Load catalogue context
 
