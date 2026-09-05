@@ -66,6 +66,28 @@ def _search_terms(value: str) -> list[str]:
     return terms[:20]
 
 
+def _exclusion_terms(values: Sequence[str] | None) -> list[str]:
+    generic = {
+        "brand",
+        "brands",
+        "model",
+        "models",
+        "phone",
+        "phones",
+        "product",
+        "products",
+        "smartphone",
+        "smartphones",
+    }
+    result: list[str] = []
+    for value in values or []:
+        tokens = [token for token in _search_terms(value) if token not in generic]
+        term = " ".join(tokens).strip()
+        if term and term not in result:
+            result.append(term[:120])
+    return result[:16]
+
+
 class ProductRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -161,6 +183,14 @@ class ProductRepository:
         by_id = {product.id: product for product in result.scalars().all()}
         return [by_id[product_id] for product_id in product_ids if product_id in by_id]
 
+    async def list_agent_identity_catalog(self) -> Sequence[Product]:
+        """Return the bounded catalogue used for exact identity and family resolution."""
+
+        result = await self._session.execute(
+            select(Product).order_by(Product.brand, Product.model, Product.id)
+        )
+        return result.scalars().all()
+
     async def find_post_purchase_cross_sell(
         self,
         *,
@@ -229,6 +259,8 @@ class ProductRepository:
         max_price_paise: int | None,
         limit: int,
         exclude_product_ids: Sequence[UUID] | None = None,
+        required_brand: str | None = None,
+        excluded_terms: Sequence[str] | None = None,
     ) -> AgentCatalogResult:
         """Rank across the complete eligible corpus, then apply the response limit."""
 
@@ -259,12 +291,18 @@ class ProductRepository:
 
         text_predicate = self._text_match(terms, normalized_query) if terms else None
         retrieval_filters = list(category_filters)
+        if required_brand is not None and required_brand.strip():
+            retrieval_filters.append(
+                func.lower(Product.brand) == required_brand.strip().casefold()
+            )
         # A trusted category narrows the search space; text then ranks the full category
         # instead of accidentally hiding relevant items with sparse catalogue copy.
         if text_predicate is not None and not effective_categories:
             retrieval_filters.append(text_predicate)
         text_matches = await self._count(
-            [*category_filters, text_predicate] if text_predicate is not None else category_filters
+            [*retrieval_filters, text_predicate]
+            if text_predicate is not None and effective_categories
+            else retrieval_filters
         )
 
         lowest_price = (
@@ -278,6 +316,15 @@ class ProductRepository:
             eligible_filters.append(Product.offer_price_paise <= max_price_paise)
         if exclude_product_ids:
             eligible_filters.append(Product.id.not_in(exclude_product_ids))
+        for excluded_term in _exclusion_terms(excluded_terms):
+            pattern = f"%{excluded_term.casefold()}%"
+            eligible_filters.append(
+                ~or_(
+                    func.lower(Product.brand).like(pattern),
+                    func.lower(Product.model).like(pattern),
+                    func.lower(Product.title).like(pattern),
+                )
+            )
         eligible_matches = await self._count(eligible_filters)
 
         if terms:
@@ -323,7 +370,11 @@ class ProductRepository:
             reason = "NO_CATEGORY_MATCH"
         elif text_predicate is not None and not effective_categories and text_matches == 0:
             reason = "NO_TEXT_MATCH"
-        elif max_price_paise is not None and lowest_price is not None:
+        elif (
+            max_price_paise is not None
+            and lowest_price is not None
+            and int(lowest_price) > max_price_paise
+        ):
             reason = "OVER_BUDGET"
         else:
             reason = "NO_ELIGIBLE_PRODUCT"

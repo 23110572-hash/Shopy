@@ -1,5 +1,6 @@
 """Stateful LLM-first Shopy Agent and persisted governed purchase proposals."""
 
+import re
 from typing import Annotated, NoReturn
 from uuid import UUID
 
@@ -36,6 +37,11 @@ from app.security import (
     CsrfPrincipalDependency,
     CurrentPrincipalDependency,
     OptionalPrincipalDependency,
+)
+from app.services.agent_turn_policy import (
+    classify_turn,
+    context_uuid_list,
+    is_trusted_buy_turn,
 )
 from app.services.proposals import ProposalStaleError, persist_purchase_proposal
 
@@ -96,19 +102,22 @@ def _safe_uuid(value: object) -> UUID | None:
 
 
 def _context_product_ids(context: dict[str, object]) -> list[UUID]:
+    """Preserve stable candidate ordering; focus never shifts ordinal positions."""
+
     identifiers: list[UUID] = []
-    for key in ("last_recommendation_ids", "pending_option_ids"):
-        values = context.get(key)
-        if not isinstance(values, list):
-            continue
-        for value in values[:8]:
-            identifier = _safe_uuid(value)
-            if identifier is not None and identifier not in identifiers:
+    for key, maximum in (
+        ("active_candidate_ids", 8),
+        ("last_compared_ids", 8),
+        ("pending_option_ids", 8),
+        ("last_recommendation_ids", 8),
+    ):
+        for identifier in context_uuid_list(context, key)[:maximum]:
+            if identifier not in identifiers:
                 identifiers.append(identifier)
     focus = _safe_uuid(context.get("focus_product_id"))
     if focus is not None and focus not in identifiers:
-        identifiers.insert(0, focus)
-    return identifiers[:12]
+        identifiers.append(focus)
+    return identifiers[:24]
 
 
 def _context_list(context: dict[str, object], key: str) -> list[object]:
@@ -122,40 +131,104 @@ def _next_context(
     response: AgentChatResponse,
     request: AgentChatRequest,
 ) -> dict[str, object]:
+    """Persist durable constraints and immutable-enough candidate/reference sets."""
+
+    policy = classify_turn(request.message)
+    session_state = response.session_state
     recommendation_ids = [str(item.product.id) for item in response.recommendations[:8]]
-    has_new_product_state = bool(recommendation_ids or response.focus_product_id)
-    prior_intent = previous.get("intent")
-    prior_mode = previous.get("intent_mode")
-    persistent_intent_mode = (
-        prior_mode
-        if response.intent_mode == "OTHER"
-        and prior_mode in {"BUY", "RECOMMEND", "COMPARE"}
-        else response.intent_mode
+    prior_active = [str(value) for value in _context_list(previous, "active_candidate_ids")]
+    if not prior_active:
+        prior_active = [str(value) for value in _context_list(previous, "last_recommendation_ids")]
+
+    reference_only = bool(
+        prior_active and response.exact_match and policy.action != "BUY"
     )
-    context: dict[str, object] = {
-        "schema_version": 3,
-        "intent": (
-            response.intent.model_dump(mode="json")
-            if has_new_product_state or not isinstance(prior_intent, dict)
-            else prior_intent
-        ),
-        "intent_mode": persistent_intent_mode,
-        "last_recommendation_ids": (
-            recommendation_ids
-            if recommendation_ids
-            else _context_list(previous, "last_recommendation_ids")
-        ),
-        "focus_product_id": (
+    if recommendation_ids and (
+        (not reference_only and policy.action != "COMPARE") or not prior_active
+    ):
+        active_candidate_ids = recommendation_ids
+    else:
+        active_candidate_ids = prior_active
+
+    prior_compared = [str(value) for value in _context_list(previous, "last_compared_ids")]
+    last_compared_ids = (
+        recommendation_ids
+        if policy.action == "COMPARE" and len(recommendation_ids) >= 2
+        else prior_compared
+    )
+    shown_ids = [str(value) for value in _context_list(previous, "shown_product_ids")]
+    for identifier in recommendation_ids:
+        if identifier not in shown_ids:
+            shown_ids.append(identifier)
+
+    excluded_ids = [str(value) for value in _context_list(previous, "excluded_product_ids")]
+    for excluded_identifier in session_state.excluded_product_ids:
+        value = str(excluded_identifier)
+        if value not in excluded_ids:
+            excluded_ids.append(value)
+    if policy.no_repeat:
+        for identifier in shown_ids:
+            if identifier not in excluded_ids:
+                excluded_ids.append(identifier)
+
+    if policy.action == "CANCEL":
+        focus_product_id: object = None
+        pending_option_ids: list[str] = []
+    else:
+        focus_product_id = (
             str(response.focus_product_id)
             if response.focus_product_id is not None
             else previous.get("focus_product_id")
-        ),
-        "pending_option_ids": (
+        )
+        pending_option_ids = (
             [str(option.product_id) for option in response.clarification.options]
             if response.clarification is not None
-            else []
+            else (
+                [str(value) for value in _context_list(previous, "pending_option_ids")]
+                if policy.action in {"MEMORY", "OTHER"}
+                else []
+            )
+        )
+
+    prior_intent = previous.get("intent")
+    preserve_prior_intent = policy.action in {"CANCEL", "MEMORY", "OTHER"} and isinstance(
+        prior_intent, dict
+    )
+    context: dict[str, object] = {
+        "schema_version": 4,
+        "intent": (
+            prior_intent
+            if preserve_prior_intent
+            else response.intent.model_dump(mode="json")
         ),
+        "intent_mode": (
+            "RECOMMEND" if policy.action == "CANCEL" else response.intent_mode
+        ),
+        "active_candidate_ids": active_candidate_ids[:8],
+        "last_recommendation_ids": active_candidate_ids[:8],
+        "last_compared_ids": last_compared_ids[:8],
+        "shown_product_ids": shown_ids[:40],
+        "excluded_product_ids": excluded_ids[:40],
+        "focus_product_id": focus_product_id,
+        "pending_option_ids": pending_option_ids[:8],
+        "pending_buy": bool(response.clarification is not None and policy.explicit_buy),
+        "hard_requirements": list(session_state.hard_requirements),
+        "soft_preferences": list(session_state.soft_preferences),
+        "excluded_terms": list(session_state.excluded_terms),
+        "preferred_brands": list(session_state.preferred_brands),
+        "budget_relationship": session_state.budget_relationship,
+        "budget_minimum_paise": session_state.budget_minimum_paise,
+        "budget_maximum_paise": session_state.budget_maximum_paise,
+        "requested_count": session_state.requested_count,
+        "exact_requested_product": session_state.exact_requested_product,
+        "unavailable_product": session_state.unavailable_product,
+        "category": response.intent.category,
     }
+    codeword = re.search(r"\bcodeword\s+([a-z0-9_-]+)", request.message, re.IGNORECASE)
+    if codeword is not None:
+        context["codeword"] = codeword.group(1).upper()
+    elif isinstance(previous.get("codeword"), str):
+        context["codeword"] = previous["codeword"]
     if previous.get("cross_sell_declined") is True:
         context["cross_sell_declined"] = True
     if request.cross_sell_consent is False:
@@ -367,9 +440,15 @@ async def chat_with_agent(
         session.add(turn)
         await session.flush()
 
+        trusted_buy = is_trusted_buy_turn(request.message) or bool(
+            request.selected_product_id is not None
+            and conversation_context.get("pending_buy") is True
+        )
         if (
             principal is not None
             and saved_controls is not None
+            and trusted_buy
+            and agent_response.session_state.unavailable_product is None
             and agent_response.winner is not None
             and agent_response.outcome == "RECOMMENDATIONS"
             and agent_response.intent_mode == "BUY"

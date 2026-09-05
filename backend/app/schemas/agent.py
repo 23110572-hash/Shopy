@@ -312,6 +312,41 @@ class PurchaseProposal(BaseModel):
     policy_checks: list[AgentPolicyCheck] = Field(default_factory=list)
 
 
+class AgentSessionState(BaseModel):
+    """Structured conversation state carried between turns and persisted in JSONB."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    turn_action: Literal["BUY", "RECOMMEND", "COMPARE", "CANCEL", "MEMORY", "OTHER"] = (
+        "OTHER"
+    )
+    hard_requirements: list[str] = Field(default_factory=list, max_length=16)
+    soft_preferences: list[str] = Field(default_factory=list, max_length=16)
+    excluded_terms: list[str] = Field(default_factory=list, max_length=16)
+    excluded_product_ids: list[UUID] = Field(default_factory=list, max_length=40)
+    preferred_brands: list[str] = Field(default_factory=list, max_length=8)
+    budget_relationship: Literal["MAXIMUM", "TARGET", "RANGE", "NONE"] = "NONE"
+    budget_minimum_paise: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    budget_maximum_paise: int | None = Field(default=None, ge=1, le=1_000_000_000)
+    requested_count: int | None = Field(default=None, ge=1, le=8)
+    exact_requested_product: str | None = Field(default=None, max_length=180)
+    unavailable_product: str | None = Field(default=None, max_length=180)
+    required_brand: str | None = Field(default=None, max_length=120)
+    evidence_limited: bool = False
+
+    @field_validator(
+        "hard_requirements", "soft_preferences", "excluded_terms", "preferred_brands"
+    )
+    @classmethod
+    def normalize_session_lists(cls, values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values:
+            item = " ".join(value.split()).strip().casefold()[:120]
+            if item and item not in normalized:
+                normalized.append(item)
+        return normalized
+
+
 class AgentChatResponse(BaseModel):
     agent_name: Literal["Shopy Agent"] = "Shopy Agent"
     reply: str
@@ -344,6 +379,7 @@ class AgentChatResponse(BaseModel):
     intent_mode: AgentIntentMode = "RECOMMEND"
     retrieval_passes: int = Field(default=0, ge=0, le=3)
     search_diagnostics: CatalogSearchDiagnostics | None = None
+    session_state: AgentSessionState = Field(default_factory=AgentSessionState)
 
 
 class AgentConversationCreateRequest(BaseModel):
