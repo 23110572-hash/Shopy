@@ -64,6 +64,7 @@ export default function AgentCheckout({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [offerMessage, setOfferMessage] = useState<string | null>(null)
+  const [addOnProposal, setAddOnProposal] = useState<PurchaseProposal | null>(null)
 
   useEffect(() => {
     setAddresses([])
@@ -76,6 +77,7 @@ export default function AgentCheckout({
     setBusy(false)
     setError(null)
     setOfferMessage(null)
+    setAddOnProposal(null)
     if (!signedIn) return
 
     const controller = new AbortController()
@@ -92,7 +94,7 @@ export default function AgentCheckout({
     void fetchCheckoutStatus(proposal.run_id, controller.signal).then((result) => {
       setStatus(result)
       if (result.post_purchase_proposal) {
-        onProposalCreated(result.post_purchase_proposal)
+        setAddOnProposal(result.post_purchase_proposal)
       }
     }).catch(
       (reason: unknown) => {
@@ -202,7 +204,7 @@ export default function AgentCheckout({
         if (!result.purchase_proposal) {
           throw new Error('The add-on was accepted but its separate proposal is unavailable.')
         }
-        onProposalCreated(result.purchase_proposal)
+        setAddOnProposal(result.purchase_proposal)
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'The optional add-on decision failed.')
@@ -219,8 +221,9 @@ export default function AgentCheckout({
   }
 
   const captured = status?.state === 'CAPTURED'
-  const offer = captured ? status?.post_purchase_offer : null
-  return <section className="agent-checkout-card">
+  const offer = status?.post_purchase_offer ?? null
+  return <>
+    <section className="agent-checkout-card">
     <div className="agent-panel-title"><span>Delivery & payment</span><b>Razorpay only</b></div>
     <h3>{proposal.product.title}</h3>
     <strong className="agent-price">{money(proposal.amount_paise)}</strong>
@@ -317,5 +320,16 @@ export default function AgentCheckout({
         : null}
     </div> : null}
     {error ? <p className="agent-inline-error">{error}</p> : null}
-  </section>
+    </section>
+    {addOnProposal && addOnProposal.proposal_id !== proposal.proposal_id ? <div className="agent-separate-addon-checkout">
+      <AgentCheckout
+        key={addOnProposal.proposal_id}
+        proposal={addOnProposal}
+        signedIn={signedIn}
+        onSignIn={onSignIn}
+        onRunChange={onRunChange}
+        onProposalCreated={onProposalCreated}
+      />
+    </div> : null}
+  </>
 }

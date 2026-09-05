@@ -228,7 +228,7 @@ class CheckoutService:
         quote: PurchaseQuote,
         order: RazorpayOrder | None,
     ) -> PreparedPostPurchaseCrossSell | None:
-        if not _has_generated_payment_request(run, order):
+        if not _is_cross_sell_offer_stage(run, order):
             return None
         graph_state = dict(run.graph_state)
         proposal_metadata = graph_state.get("proposal_metadata")
@@ -308,7 +308,7 @@ class CheckoutService:
                 raise CheckoutServiceError(
                     "QUOTE_NOT_FOUND", "Purchase quote not found", status_code=404
                 )
-            if not _has_generated_payment_request(run, order):
+            if not _is_cross_sell_offer_stage(run, order):
                 raise CheckoutServiceError(
                     "PAYMENT_REQUEST_NOT_CREATED",
                     "An optional add-on is available after the first Razorpay Order is created.",
@@ -1768,10 +1768,12 @@ def _recorded_post_purchase_proposal(run: PurchaseRun) -> PurchaseProposal | Non
         return None
 
 
-def _has_generated_payment_request(
+def _is_cross_sell_offer_stage(
     run: PurchaseRun,
     order: RazorpayOrder | None,
 ) -> bool:
+    if run.state == PurchaseState.QUOTED:
+        return True
     return (
         run.provider_write_started
         and order is not None
