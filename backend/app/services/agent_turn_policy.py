@@ -452,6 +452,32 @@ def infer_requested_brand(requested_name: str, products: list[CatalogProduct]) -
     direct = [brand for brand in brands if normalize_text(brand) in text]
     if direct:
         return max(direct, key=len)
+
+    # Prefer distinctive family names (for example, iPhone -> Apple) over
+    # generation numbers that can occur across unrelated brands.
+    requested_family_tokens = {
+        token
+        for token in _identity_tokens(requested_name)
+        if not token.isdigit()
+        and len(token) > 2
+        and token not in _GENERIC_IDENTITY_WORDS
+    }
+    family_scores: dict[str, int] = {}
+    for product in products:
+        product_tokens = set(_identity_tokens(f"{product.model} {product.title}"))
+        score = len(requested_family_tokens & product_tokens)
+        if score:
+            family_scores[product.brand] = max(
+                score, family_scores.get(product.brand, 0)
+            )
+    if family_scores:
+        best_score = max(family_scores.values())
+        best_brands = [
+            brand for brand, score in family_scores.items() if score == best_score
+        ]
+        if len(best_brands) == 1:
+            return best_brands[0]
+
     ranked = sorted(
         products,
         key=lambda product: (

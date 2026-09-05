@@ -542,6 +542,28 @@ class ShoppingGraph:
         elif understanding.reference_status == "RESOLVED":
             forced_product_ids = list(understanding.referenced_product_ids)
 
+        # A provider-selected ID is trusted only when it exactly matches the named model.
+        # This prevents an unavailable BUY from silently becoming a different purchase.
+        if forced_product_ids and policy.action != "COMPARE":
+            requested_named_product = requested_identity_name(
+                request.message, understanding.search_query
+            )
+            if requested_named_product is not None:
+                exact_named_product = _find_exact_identity(
+                    requested_named_product, state.get("identity_products", [])
+                )
+                if (
+                    exact_named_product is None
+                    or forced_product_ids != [exact_named_product.id]
+                ):
+                    forced_product_ids = []
+                    understanding = understanding.model_copy(
+                        update={
+                            "reference_status": "NONE",
+                            "referenced_product_ids": [],
+                        }
+                    )
+
         latest_available_requested = _requests_latest_available(request.message)
         proposed_question = understanding.clarification_question or (
             "Which of the products from the current session did you mean?"

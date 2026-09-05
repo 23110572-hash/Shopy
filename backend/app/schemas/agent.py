@@ -136,6 +136,17 @@ class ShoppingUnderstanding(BaseModel):
     clarification_question: str | None = Field(max_length=500)
     other_reply: str | None = Field(max_length=500)
 
+    @model_validator(mode="before")
+    @classmethod
+    def align_supplied_product_ids(cls, value: object) -> object:
+        """Repair the redundant status when the LLM supplied explicit catalogue IDs."""
+        if not isinstance(value, dict):
+            return value
+        product_ids = value.get("referenced_product_ids")
+        if value.get("reference_status") == "NONE" and isinstance(product_ids, list) and product_ids:
+            return {**value, "reference_status": "RESOLVED"}
+        return value
+
     @field_validator("normalized_request", "search_query")
     @classmethod
     def normalize_text(cls, value: str) -> str:
