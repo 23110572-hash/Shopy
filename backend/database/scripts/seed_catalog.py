@@ -212,6 +212,35 @@ def load_and_validate_catalog(path: Path = DATA_FILE) -> list[SeedProduct]:
     duplicate_skus = sorted(sku for sku, count in sku_counts.items() if count > 1)
     if duplicate_skus:
         raise ValueError(f"Duplicate SKUs: {', '.join(duplicate_skus)}")
+
+    features_path = path.with_name("verified_tech_product_features.json")
+    raw_features: Any = json.loads(features_path.read_text(encoding="utf-8"))
+    if not isinstance(raw_features, dict):
+        raise TypeError("Verified feature profiles must be a JSON object keyed by SKU")
+    feature_profiles: dict[str, dict[str, object]] = {}
+    for raw_sku, raw_profile in raw_features.items():
+        sku = str(raw_sku).upper()
+        if not isinstance(raw_profile, dict) or not raw_profile:
+            raise TypeError(f"Feature profile for {sku} must be a non-empty object")
+        feature_profiles[sku] = {
+            str(key): value for key, value in raw_profile.items()
+        }
+
+    catalogue_skus = {product.sku for product in products}
+    missing_profiles = sorted(catalogue_skus - set(feature_profiles))
+    unknown_profiles = sorted(set(feature_profiles) - catalogue_skus)
+    if missing_profiles:
+        raise ValueError(
+            "Catalogue products missing verified feature profiles: "
+            + ", ".join(missing_profiles)
+        )
+    if unknown_profiles:
+        raise ValueError(
+            "Verified feature profiles contain unknown SKUs: "
+            + ", ".join(unknown_profiles)
+        )
+    for product in products:
+        product.specifications.update(feature_profiles[product.sku])
     return products
 
 

@@ -339,9 +339,16 @@ def safe_memory_reply(
 ) -> str | None:
     """Answer factual session-memory questions from persisted structured state."""
 
-    if classify_turn(message).action != "MEMORY":
-        return None
     text = normalize_text(message)
+    history_query = bool(
+        re.search(
+            r"\b(?:what|which)\b.*\b(?:show|shown|showed|recommend|recommended)\b"
+            r"|\b(?:previous|earlier|before)\b.*\b(?:product|products|phone|phones|option|options)\b",
+            text,
+        )
+    )
+    if classify_turn(message).action != "MEMORY" and not history_query:
+        return None
     by_id = {product.id: product for product in products}
     active_ids = context_uuid_list(context, "active_candidate_ids") or context_uuid_list(
         context, "last_recommendation_ids"
@@ -352,7 +359,9 @@ def safe_memory_reply(
         if re.search(rf"\b{re.escape(token)}\b", text) and index < len(active):
             product = active[index]
             return f"The {token} product was {product.title} at {_format_inr(product.offer_price_paise)}."
-    if re.search(r"\b(?:repeat|list)\b", text) and active:
+    if history_query or re.search(r"\b(?:repeat|list)\b", text):
+        if not active:
+            return "I have not shown any products in this conversation yet."
         items = ", ".join(
             f"{index}. {product.title} at {_format_inr(product.offer_price_paise)}"
             for index, product in enumerate(active, 1)

@@ -386,8 +386,16 @@ async def chat_with_agent(
             if conversation is not None
             else []
         )
+        # Shopping memory is deliberately scoped to this one conversation row. Account-wide
+        # profile identity may personalize a greeting, but constraints, candidates, references,
+        # exclusions, and recent turns never come from another conversation.
         llm_conversation_context: dict[str, object] = {
             **conversation_context,
+            "memory_scope": (
+                "CURRENT_CONVERSATION_ONLY"
+                if conversation is not None
+                else "CURRENT_TURN_ONLY"
+            ),
             "profile_display_name": (
                 principal.user.display_name if principal is not None else None
             ),

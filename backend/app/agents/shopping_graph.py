@@ -1414,6 +1414,14 @@ class ShoppingGraph:
             )
             outcome = "CONVERSATION"
             resolution_kind = "CONVERSATION"
+        elif intent_mode == "COMPARE" and recommendations:
+            reply = _grounded_comparison_reply(
+                recommendations,
+                winner,
+                state["request"].message,
+            )
+            outcome = "RECOMMENDATIONS"
+            resolution_kind = "ALTERNATIVES"
         elif state.get("evidence_limited") and recommendations:
             names = ", ".join(
                 f"{item.product.title} at {_format_inr(item.product.offer_price_paise)}"
@@ -1848,8 +1856,17 @@ def _should_present_unranked(
         "under budget",
     }
     criteria = [criterion for criterion in criteria if criterion not in generic]
+    feature_rich = all(
+        sum(
+            1
+            for key, value in item.product.specifications.items()
+            if key != "product_type" and value not in (None, "", [])
+        )
+        >= 2
+        for item in shortlist
+    )
     if not criteria:
-        return True
+        return not feature_rich
     evidence_documents = [
         _canonical_identity(
             " ".join(
@@ -1893,6 +1910,124 @@ def _deterministic_decision(
     )
 
 
+def _comparison_fact_pairs(
+    product: CatalogProduct,
+    request_text: str,
+    *,
+    limit: int,
+) -> list[tuple[str, str]]:
+    criterion_groups = (
+        ({"camera", "photo", "photography", "video"}, ("rear_cameras", "camera_features", "front_cameras")),
+        ({"battery", "backup", "endurance"}, ("battery_capacity_mah", "battery_life_hours", "battery_claim")),
+        ({"charge", "charging", "charger"}, ("wired_charging_w", "charging_case")),
+        ({"gaming", "performance", "fast", "processor"}, ("processor", "processor_family", "refresh_rate_hz", "gaming_features", "graphics")),
+        ({"display", "screen"}, ("display", "display_size_inches", "main_display", "cover_display", "refresh_rate_hz")),
+        ({"light", "lightweight", "weight", "compact", "portable"}, ("weight_g", "form_factor", "portability")),
+        ({"noise", "anc", "cancellation"}, ("active_noise_cancellation", "sound_modes")),
+        ({"water", "dust", "durable", "durability"}, ("water_resistance", "water_dust_resistance")),
+        ({"pen", "stylus", "drawing", "notes"}, ("stylus_support", "included_input")),
+    )
+    defaults = {
+        "smartphones": (
+            "form_factor", "processor", "display", "refresh_rate_hz", "rear_cameras",
+            "battery_capacity_mah", "battery_claim", "wired_charging_w", "weight_g",
+        ),
+        "speakers": (
+            "form_factor", "audio_output", "battery_life_hours",
+            "water_dust_resistance", "connectivity", "extra_features",
+        ),
+        "headphones": (
+            "form_factor", "active_noise_cancellation", "battery_life_hours",
+            "battery_claim", "audio_codecs", "water_dust_resistance", "weight_g",
+        ),
+        "laptops": (
+            "form_factor", "display_size_inches", "processor_family", "platform",
+            "graphics", "features", "configuration_note",
+        ),
+        "tablets": (
+            "form_factor", "display_size_inches", "display", "processor",
+            "refresh_rate_hz", "battery_capacity_mah", "stylus_support", "platform",
+        ),
+    }
+    request_words = set(_normalized_words(request_text))
+    ordered_keys: list[str] = []
+    for words, keys in criterion_groups:
+        if request_words.intersection(words):
+            ordered_keys.extend(keys)
+    ordered_keys.extend(defaults.get(product.category, ()))
+    ordered_keys.extend(sorted(product.specifications))
+
+    labels = {
+        "rear_cameras": "rear cameras",
+        "front_cameras": "front cameras",
+        "camera_features": "camera features",
+        "battery_capacity_mah": "battery",
+        "battery_life_hours": "battery life",
+        "battery_claim": "battery claim",
+        "wired_charging_w": "wired charging",
+        "refresh_rate_hz": "refresh rate",
+        "weight_g": "weight",
+        "display_size_inches": "display size",
+        "active_noise_cancellation": "active noise cancellation",
+        "water_dust_resistance": "water/dust resistance",
+        "water_resistance": "water resistance",
+        "processor_family": "processor family",
+        "configuration_note": "configuration",
+    }
+    suffixes = {
+        "battery_capacity_mah": " mAh",
+        "battery_life_hours": " hours",
+        "wired_charging_w": " W",
+        "refresh_rate_hz": " Hz",
+        "weight_g": " g",
+        "display_size_inches": " inches",
+    }
+    selected: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for key in ordered_keys:
+        if key in seen or key == "product_type":
+            continue
+        value = product.specifications.get(key)
+        if value is None or value == "" or value == []:
+            continue
+        seen.add(key)
+        if isinstance(value, bool):
+            rendered = "yes" if value else "no"
+        elif isinstance(value, list):
+            rendered = ", ".join(str(item) for item in value[:4])
+        else:
+            rendered = f"{value}{suffixes.get(key, '')}"
+        label = labels.get(key, key.replace("_", " "))
+        selected.append((label, rendered))
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _grounded_comparison_reply(
+    recommendations: list[AgentRecommendation],
+    winner: AgentRecommendation | None,
+    request_text: str,
+) -> str:
+    compared: list[str] = []
+    for item in recommendations[:4]:
+        facts = _comparison_fact_pairs(item.product, request_text, limit=4)
+        details = "; ".join(f"{label}: {value}" for label, value in facts)
+        compared.append(
+            f"{item.product.title} ({_format_inr(item.product.offer_price_paise)})"
+            + (f" — {details}" if details else "")
+        )
+    reply = "Verified comparison: " + " | ".join(compared) + "."
+    if winner is not None:
+        reply += (
+            f" Based on your stated preference, the comparison selected "
+            f"{winner.product.title}. No checkout was prepared."
+        )
+    else:
+        reply += " No checkout was prepared; tell me which option you prefer."
+    return reply
+
+
 def _grounded_winner_reason(
     winner: AgentRecommendation,
     shortlist: list[AgentRecommendation],
@@ -1906,7 +2041,13 @@ def _grounded_winner_reason(
     maximum = state["intent"].max_price_paise
     if maximum is not None:
         facts.append(f"within the {_format_inr(maximum)} maximum")
-    if len(shortlist) > 1:
+    evidence = _comparison_fact_pairs(product, state["request"].message, limit=3)
+    if evidence:
+        facts.append(
+            "with verified "
+            + "; ".join(f"{label}: {value}" for label, value in evidence)
+        )
+    elif len(shortlist) > 1:
         facts.append(
             "using only verified catalogue identity, price, stock, tags, and listed specifications"
         )
