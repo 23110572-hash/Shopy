@@ -134,6 +134,7 @@ export default function AgentCheckout({
       ])
       activeRun = session.run_id
       setRunId(activeRun)
+      setStatus(await fetchCheckoutStatus(activeRun))
       const callback = await openRazorpayCheckout(fromCheckoutSession(session))
       const result = await confirmCheckoutPayment(activeRun, callback)
       setStatus(result)

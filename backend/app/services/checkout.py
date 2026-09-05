@@ -204,7 +204,7 @@ class CheckoutService:
                 session=session,
                 run=run,
                 quote=quote,
-                payment=payment,
+                order=order,
             )
             return _status_response(
                 run=run,
@@ -226,9 +226,9 @@ class CheckoutService:
         session: AsyncSession,
         run: PurchaseRun,
         quote: PurchaseQuote,
-        payment: PaymentAttempt | None,
+        order: RazorpayOrder | None,
     ) -> PreparedPostPurchaseCrossSell | None:
-        if not _is_authoritatively_captured(run, payment) or run.terminal_reason is not None:
+        if not _has_generated_payment_request(run, order):
             return None
         graph_state = dict(run.graph_state)
         proposal_metadata = graph_state.get("proposal_metadata")
@@ -303,15 +303,15 @@ class CheckoutService:
                     "RUN_NOT_FOUND", "Purchase run not found", status_code=404
                 )
             quote = await repository.get_quote_for_run(run.id)
-            payment = await repository.get_latest_payment_for_run(run.id)
+            order = await repository.get_order_for_run(run.id)
             if quote is None:
                 raise CheckoutServiceError(
                     "QUOTE_NOT_FOUND", "Purchase quote not found", status_code=404
                 )
-            if not _is_authoritatively_captured(run, payment):
+            if not _has_generated_payment_request(run, order):
                 raise CheckoutServiceError(
-                    "PAYMENT_NOT_CAPTURED",
-                    "An optional add-on can be considered only after verified payment capture.",
+                    "PAYMENT_REQUEST_NOT_CREATED",
+                    "An optional add-on is available after the first Razorpay Order is created.",
                     status_code=409,
                 )
 
@@ -350,7 +350,7 @@ class CheckoutService:
                 session=session,
                 run=run,
                 quote=quote,
-                payment=payment,
+                order=order,
             )
             if prepared is None:
                 raise CheckoutServiceError(
@@ -1768,16 +1768,24 @@ def _recorded_post_purchase_proposal(run: PurchaseRun) -> PurchaseProposal | Non
         return None
 
 
-def _is_authoritatively_captured(
+def _has_generated_payment_request(
     run: PurchaseRun,
-    payment: PaymentAttempt | None,
+    order: RazorpayOrder | None,
 ) -> bool:
     return (
-        run.state == PurchaseState.CAPTURED
-        and run.payment_state == PaymentStatus.CAPTURED.value
-        and payment is not None
-        and payment.status == PaymentStatus.CAPTURED.value
-        and payment.captured is True
+        run.provider_write_started
+        and order is not None
+        and order.provider_order_id is not None
+        and order.operation_state == ProviderOrderOperationState.CREATED.value
+        and run.state
+        in {
+            PurchaseState.ORDER_CREATED,
+            PurchaseState.NEEDS_USER_AUTH,
+            PurchaseState.PAYMENT_INITIATED,
+            PurchaseState.PAYMENT_UNKNOWN,
+            PurchaseState.PAYMENT_FAILED,
+            PurchaseState.CAPTURED,
+        }
     )
 
 
