@@ -1738,14 +1738,14 @@ def _canonical_identity(value: str) -> str:
 def _find_exact_identity(
     requested_name: str, products: list[CatalogProduct]
 ) -> CatalogProduct | None:
-    requested = _canonical_identity(requested_name)
+    requested = "".join(_normalized_words(requested_name))
     matches: list[CatalogProduct] = []
     for product in products:
         aliases = {
-            _canonical_identity(product.title),
-            _canonical_identity(product.model),
-            _canonical_identity(f"{product.brand} {product.model}"),
-            _canonical_identity(product.sku),
+            "".join(_normalized_words(product.title)),
+            "".join(_normalized_words(product.model)),
+            "".join(_normalized_words(f"{product.brand} {product.model}")),
+            "".join(_normalized_words(product.sku)),
         }
         if requested in aliases:
             matches.append(product)

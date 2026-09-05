@@ -285,6 +285,27 @@ def resolve_reference_ids(
     if not pool:
         return []
 
+    # Resolve a uniquely named product from the current recommendation set first.
+    # Compact alphanumeric matching treats aliases such as "S15" and "S 15" alike.
+    compact_message = "".join(_identity_tokens(message))
+    named_matches: list[UUID] = []
+    for identifier in pool:
+        product = by_id[identifier]
+        aliases = {
+            "".join(_identity_tokens(product.title)),
+            "".join(_identity_tokens(product.model)),
+            "".join(_identity_tokens(f"{product.brand} {product.model}")),
+            "".join(_identity_tokens(product.sku)),
+        }
+        if any(
+            len(alias) >= 4 and alias in compact_message
+            for alias in aliases
+            if alias
+        ):
+            named_matches.append(identifier)
+    if len(named_matches) == 1:
+        return named_matches
+
     referenced: list[UUID] = []
     ordinal_matches: list[tuple[int, int]] = []
     for token, index in _ORDINAL.items():
