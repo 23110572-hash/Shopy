@@ -202,36 +202,34 @@ If the shopper accepts the suggestion, Shopy creates a **new single-product prop
 The core shopping intelligence is implemented as a bounded LangGraph workflow. LangGraph gives the agent explicit stages, typed shared state, controlled branches, and a clear stopping point.
 
 ```mermaid
-flowchart TD
-    START([START]) --> LOAD["1 · load_catalogue_context<br/>Load taxonomy, product identities, and initial state"]
-    LOAD --> UNDERSTAND["2 · understand_request<br/>Resolve intent, references, and session constraints"]
-    UNDERSTAND --> CONTROLS["3 · apply_controls<br/>Enforce account controls, categories, and limits"]
+flowchart LR
+    REQUEST([Customer Request]) --> CONTEXT[Load Catalog]
+    CONTEXT --> UNDERSTAND[Understand Request]
+    UNDERSTAND --> CONTROLS[Apply Safety Rules]
 
-    CONTROLS --> CONTROL_ROUTE{"_route_after_controls"}
-    CONTROL_ROUTE -->|"blocked · clarification · OTHER"| COMPOSE
-    CONTROL_ROUTE -->|"retrieve"| RETRIEVE["4 · retrieve_catalogue<br/>Search and filter the verified catalogue"]
+    CONTROLS -->|Continue| SEARCH[Search Products]
+    CONTROLS -->|Reply or Clarify| RESPONSE[Build Reply]
 
-    RETRIEVE --> EVALUATE["5 · evaluate_results<br/>Validate, refine, or finalize results"]
-    EVALUATE --> EVALUATION_ROUTE{"_route_after_evaluation"}
-    EVALUATION_ROUTE -->|"REFINE · maximum 3 retrieval passes"| RETRIEVE
-    EVALUATION_ROUTE -->|"FINAL + verified product IDs"| COMPARE["6 · compare_products<br/>Rank finalists and safely select a winner"]
-    EVALUATION_ROUTE -->|"blocked · CLARIFY · NO_MATCH · exhausted"| COMPOSE
+    SEARCH --> REVIEW{Review Results}
+    REVIEW -->|Refine · max 3| SEARCH
+    REVIEW -->|Best Matches| COMPARE[Compare Options]
+    REVIEW -->|No Match or Clarify| RESPONSE
 
-    COMPARE --> COMPOSE["7 · compose_response<br/>Build the typed AgentChatResponse"]
-    COMPOSE --> END([END])
+    COMPARE --> RESPONSE
+    RESPONSE --> END([Agent Response])
 
-    classDef process fill:#172033,color:#f8fafc,stroke:#60a5fa,stroke-width:2px;
-    classDef control fill:#fef3c7,color:#78350f,stroke:#f59e0b,stroke-width:2px;
+    classDef step fill:#172033,color:#f8fafc,stroke:#60a5fa,stroke-width:2px;
+    classDef decision fill:#fef3c7,color:#78350f,stroke:#f59e0b,stroke-width:2px;
     classDef response fill:#064e3b,color:#ecfdf5,stroke:#34d399,stroke-width:2px;
     classDef terminal fill:#312e81,color:#eef2ff,stroke:#818cf8,stroke-width:2px;
 
-    class LOAD,UNDERSTAND,CONTROLS,RETRIEVE,EVALUATE,COMPARE process;
-    class CONTROL_ROUTE,EVALUATION_ROUTE control;
-    class COMPOSE response;
-    class START,END terminal;
+    class CONTEXT,UNDERSTAND,CONTROLS,SEARCH,COMPARE step;
+    class REVIEW decision;
+    class RESPONSE response;
+    class REQUEST,END terminal;
 ```
 
-The diagram mirrors the implemented `StateGraph`: seven executable nodes, two conditional edge routers, one bounded refinement loop, and one terminal edge from `compose_response` to `END`.
+The agent follows a bounded flow: understand the request, apply safety rules, search verified products, compare valid options, and return one controlled response.
 
 ### Graph stage 1 — Load catalogue context
 
