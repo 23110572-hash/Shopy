@@ -310,12 +310,11 @@ export default function AgentCheckout({
     </div> : null}
     {offerMessage ? <p className="agent-offer-message">{offerMessage}</p> : null}
     {status && !captured ? <div className="agent-run-status">
-      <p>{status.message}</p>
+      {status.message ? <p>{status.message}</p> : null}
       {status.allowed_actions.includes('RECONCILE') || status.state === 'PAYMENT_UNKNOWN'
         ? <button type="button" onClick={reconcile} disabled={busy}>Reconcile same payment</button>
         : null}
     </div> : null}
     {error ? <p className="agent-inline-error">{error}</p> : null}
-    <small>No COD and no autonomous payment. Razorpay confirmation is always yours.</small>
   </section>
 }

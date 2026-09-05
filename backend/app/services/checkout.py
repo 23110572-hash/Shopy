@@ -1842,7 +1842,7 @@ def _status_response(
     elif "OPEN_CHECKOUT" in actions:
         message = "The genuine Razorpay Test Mode Order is ready for buyer authentication."
     elif order is None:
-        message = "The bounded quote is ready to create a Razorpay Test Mode Order."
+        message = ""
     else:
         message = "The purchase is waiting for an authoritative provider state."
 
