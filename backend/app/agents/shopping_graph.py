@@ -272,6 +272,29 @@ class ShoppingGraph:
                 ),
             )
 
+        latest_available_requested = _requests_latest_available(request.message)
+        proposed_question = understanding.clarification_question or (
+            "Which of the products from the current session did you mean?"
+        )
+        if (
+            understanding.needs_clarification
+            or understanding.reference_status in {"AMBIGUOUS", "INVALID"}
+        ) and (
+            latest_available_requested
+            or _repeats_recent_clarification(
+                proposed_question,
+                self._conversation_context,
+            )
+        ):
+            understanding = understanding.model_copy(
+                update={
+                    "needs_clarification": False,
+                    "clarification_question": None,
+                    "reference_status": "NONE",
+                    "referenced_product_ids": [],
+                }
+            )
+
         forced_product_id: UUID | None = selected_product_id
         if forced_product_id is None and understanding.reference_status == "RESOLVED":
             forced_product_id = understanding.referenced_product_ids[0]
@@ -319,9 +342,20 @@ class ShoppingGraph:
         search_query = understanding.search_query
         if not search_query and continuing and previous_intent is not None:
             search_query = previous_intent.query
+        if (
+            latest_available_requested
+            and previous_intent is not None
+            and _is_latest_only_followup(request.message)
+        ):
+            family_query = _without_generation_tokens(previous_intent.query)
+            if family_query:
+                search_query = family_query
+        soft_preferences = list(understanding.soft_preferences)
+        if latest_available_requested and "latest available model" not in soft_preferences:
+            soft_preferences.append("latest available model")
         preferences = list(
             dict.fromkeys(
-                [*understanding.hard_requirements, *understanding.soft_preferences]
+                [*understanding.hard_requirements, *soft_preferences]
             )
         )[:16]
         if not preferences and continuing and previous_intent is not None:
@@ -352,7 +386,7 @@ class ShoppingGraph:
             intent_source="openrouter",
             category_slugs=categories,
             search_query=search_query,
-            soft_preferences=list(understanding.soft_preferences),
+            soft_preferences=soft_preferences,
             hard_requirements=list(understanding.hard_requirements),
             excluded_product_ids=list(understanding.excluded_product_ids),
             exact_match=forced_product_id is not None,
@@ -570,6 +604,50 @@ class ShoppingGraph:
                     "was created."
                 )
             )
+
+        latest_available = "latest available model" in state.get(
+            "soft_preferences", []
+        )
+        if latest_available and not hits and evaluation.action in {"CLARIFY", "NO_MATCH"}:
+            current_query = state.get("search_query", "")
+            family_query = _without_generation_tokens(current_query)
+            if family_query and family_query.casefold() != current_query.casefold():
+                evaluation = evaluation.model_copy(
+                    update={
+                        "action": "REFINE",
+                        "revised_search_query": family_query,
+                        "additional_soft_preferences": ["latest available model"],
+                        "clarification_question": None,
+                        "explanation": (
+                            "The exact generation was unavailable, so search the verified "
+                            "product family for the latest available model."
+                        ),
+                    }
+                )
+
+        if evaluation.action == "CLARIFY":
+            clarification_question = evaluation.clarification_question or (
+                "Could you clarify which requirement matters most?"
+            )
+            repeated = _repeats_recent_clarification(
+                clarification_question,
+                self._conversation_context,
+            )
+            if (latest_available or repeated) and hits:
+                finalist_ids = evaluation.relevant_product_ids or [
+                    hit.product.id for hit in hits[:MAX_FINALISTS]
+                ]
+                evaluation = evaluation.model_copy(
+                    update={
+                        "action": "FINAL",
+                        "relevant_product_ids": finalist_ids,
+                        "clarification_question": None,
+                        "explanation": (
+                            "Resolved the latest-available fallback from verified catalogue "
+                            "candidates instead of repeating a clarification."
+                        ),
+                    }
+                )
 
         updates = ShoppingGraphState(evaluation=evaluation)
         if evaluation.action == "CLARIFY":
@@ -813,6 +891,61 @@ class ShoppingGraph:
                 search_diagnostics=public_diagnostics,
             )
         )
+
+
+def _normalized_words(value: str) -> list[str]:
+    normalized = "".join(
+        character if character.isalnum() else " "
+        for character in value.casefold()
+    )
+    return normalized.split()
+
+
+def _requests_latest_available(value: str) -> bool:
+    words = _normalized_words(value)
+    return "latest" in words or "newest" in words or (
+        "most" in words and "recent" in words
+    )
+
+
+def _is_latest_only_followup(value: str) -> bool:
+    words = set(_normalized_words(value))
+    return bool(words) and _requests_latest_available(value) and words.issubset(
+        {
+            "the",
+            "latest",
+            "newest",
+            "most",
+            "recent",
+            "available",
+            "one",
+            "model",
+            "please",
+        }
+    )
+
+
+def _without_generation_tokens(value: str) -> str:
+    return " ".join(
+        word for word in value.split() if not any(character.isdigit() for character in word)
+    ).strip()
+
+
+def _repeats_recent_clarification(
+    question: str,
+    conversation_context: dict[str, object],
+) -> bool:
+    normalized_question = _normalized_words(question)
+    recent_turns = conversation_context.get("recent_turns")
+    if not isinstance(recent_turns, list):
+        return False
+    for turn in recent_turns[-4:]:
+        if not isinstance(turn, dict):
+            continue
+        assistant = turn.get("assistant")
+        if isinstance(assistant, str) and _normalized_words(assistant) == normalized_question:
+            return True
+    return False
 
 
 def _previous_intent(context: dict[str, object]) -> ShoppingIntent | None:
