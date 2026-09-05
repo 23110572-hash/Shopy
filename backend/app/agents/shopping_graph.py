@@ -220,7 +220,11 @@ class ShoppingGraph:
                 conversation_reply=memory_reply,
             )
 
-        allowed_reference_ids = {product.id for product in self._reference_products}
+        session_reference_ids = {product.id for product in self._reference_products}
+        catalogue_identity_ids = {
+            product.id for product in state.get("identity_products", [])
+        }
+        provider_reference_ids = session_reference_ids | catalogue_identity_ids
         deterministic_references = resolve_reference_ids(
             request.message,
             self._conversation_context,
@@ -228,7 +232,7 @@ class ShoppingGraph:
         )
         if (
             request.selected_product_id is not None
-            and request.selected_product_id in allowed_reference_ids
+            and request.selected_product_id in session_reference_ids
         ):
             deterministic_references = [request.selected_product_id]
         if deterministic_references:
@@ -331,6 +335,17 @@ class ShoppingGraph:
                     "active_product_count": category.active_product_count,
                 }
                 for category in state.get("taxonomy", [])
+            ],
+            "product_identities": [
+                {
+                    "id": str(product.id),
+                    "brand": product.brand,
+                    "model": product.model,
+                    "title": product.title,
+                    "category": product.category,
+                    "in_stock": product.in_stock,
+                }
+                for product in state.get("identity_products", [])
             ],
             "money_unit": "INR",
             "searchable_product_fields": [
@@ -490,8 +505,8 @@ class ShoppingGraph:
                 ),
             )
         invalid_provider_reference = not returned_reference_ids.issubset(
-            allowed_reference_ids
-        ) or not returned_exclusion_ids.issubset(allowed_reference_ids)
+            provider_reference_ids
+        ) or not returned_exclusion_ids.issubset(provider_reference_ids)
         if invalid_provider_reference and not deterministic_references:
             return ShoppingGraphState(
                 understanding=understanding,
@@ -506,7 +521,7 @@ class ShoppingGraph:
             )
 
         selected_product_id = request.selected_product_id
-        if selected_product_id is not None and selected_product_id not in allowed_reference_ids:
+        if selected_product_id is not None and selected_product_id not in session_reference_ids:
             return ShoppingGraphState(
                 understanding=understanding,
                 intent=default_intent,
@@ -1915,6 +1930,7 @@ def _comparison_fact_pairs(
     request_text: str,
     *,
     limit: int,
+    preferred_keys: tuple[str, ...] = (),
 ) -> list[tuple[str, str]]:
     criterion_groups = (
         ({"camera", "photo", "photography", "video"}, ("rear_cameras", "camera_features", "front_cameras")),
@@ -1950,7 +1966,7 @@ def _comparison_fact_pairs(
         ),
     }
     request_words = set(_normalized_words(request_text))
-    ordered_keys: list[str] = []
+    ordered_keys: list[str] = list(preferred_keys)
     for words, keys in criterion_groups:
         if request_words.intersection(words):
             ordered_keys.extend(keys)
@@ -2009,9 +2025,34 @@ def _grounded_comparison_reply(
     winner: AgentRecommendation | None,
     request_text: str,
 ) -> str:
+    ordered_specification_keys = list(
+        dict.fromkeys(
+            key
+            for item in recommendations[:4]
+            for key in item.product.specifications
+            if key != "product_type"
+        )
+    )
+    differing_keys = tuple(
+        key
+        for key in ordered_specification_keys
+        if len(
+            {
+                repr(item.product.specifications.get(key, "<not listed>"))
+                for item in recommendations[:4]
+            }
+        )
+        > 1
+    )
+    fact_limit = min(4, len(differing_keys)) if differing_keys else 4
     compared: list[str] = []
     for item in recommendations[:4]:
-        facts = _comparison_fact_pairs(item.product, request_text, limit=4)
+        facts = _comparison_fact_pairs(
+            item.product,
+            request_text,
+            limit=fact_limit,
+            preferred_keys=differing_keys,
+        )
         details = "; ".join(f"{label}: {value}" for label, value in facts)
         compared.append(
             f"{item.product.title} ({_format_inr(item.product.offer_price_paise)})"
