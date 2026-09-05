@@ -18,8 +18,11 @@ from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentPolicyCheck,
+    AgentProductDecision,
+    AgentRecommendation,
     ProposalHardLimits,
     PurchaseProposal,
+    ShoppingIntent,
 )
 from app.schemas.catalog import CatalogProduct
 
@@ -40,6 +43,8 @@ async def persist_purchase_proposal(
     controls: ShoppingAgentControls,
     conversation_id: UUID | None = None,
     conversation_turn_id: UUID | None = None,
+    idempotency_key: str | None = None,
+    proposal_metadata: dict[str, object] | None = None,
 ) -> PurchaseProposal | None:
     winner = response.winner
     decision = response.decision
@@ -67,6 +72,7 @@ async def persist_purchase_proposal(
         "selected_product_id": str(product.id),
         "product_version": product.version,
         "controls_version": controls.version,
+        "proposal_metadata": proposal_metadata or {},
     }
     request_hash = _canonical_hash(request_payload)
     run = PurchaseRun(
@@ -75,7 +81,7 @@ async def persist_purchase_proposal(
         merchant_id=product.merchant_id,
         conversation_id=conversation_id,
         conversation_turn_id=conversation_turn_id,
-        idempotency_key=f"proposal:{run_id.hex}",
+        idempotency_key=idempotency_key or f"proposal:{run_id.hex}",
         request_hash=request_hash,
         command=request.message,
         state=PurchaseState.RECEIVED,
@@ -112,6 +118,7 @@ async def persist_purchase_proposal(
         "cross_sell_product_id": str(decision.cross_sell_product_id)
         if decision.cross_sell_product_id
         else None,
+        "proposal_metadata": proposal_metadata or {},
     }
     quote_hash = _canonical_hash(
         {
@@ -123,6 +130,7 @@ async def persist_purchase_proposal(
             "controls_version": controls.version,
             "selection_source": decision.decision_source,
             "selection_reason": decision.winner_reason,
+            "proposal_metadata": proposal_metadata or {},
             "expires_at": expires_at.isoformat(),
         }
     )
@@ -154,6 +162,7 @@ async def persist_purchase_proposal(
         "intent": response.intent.model_dump(mode="json"),
         "decision": decision.model_dump(mode="json"),
         "quote_hash": quote_hash,
+        "proposal_metadata": proposal_metadata or {},
     }
     await session.flush()
 
@@ -176,6 +185,7 @@ async def persist_purchase_proposal(
             "currency": "INR",
             "selection_source": decision.decision_source,
             "quote_hash": quote_hash,
+            "proposal_metadata": proposal_metadata or {},
         },
         signing_secret=signing_secret,
     )
@@ -216,6 +226,88 @@ async def persist_purchase_proposal(
             ),
         ],
     )
+
+
+async def persist_post_purchase_cross_sell_proposal(
+    *,
+    session: AsyncSession,
+    settings: Settings,
+    buyer_user_id: UUID,
+    source_run: PurchaseRun,
+    source_quote: PurchaseQuote,
+    product: CatalogProduct,
+    controls: ShoppingAgentControls,
+    relation_type: str,
+    benefit: str,
+) -> PurchaseProposal:
+    """Create a separate, buyer-confirmed proposal for one accepted add-on."""
+
+    reason = f"Optional add-on after {source_quote.title}: {benefit}"[:800]
+    recommendation = AgentRecommendation(
+        product=product,
+        score=100,
+        reasons=[benefit[:500]],
+    )
+    decision = AgentProductDecision(
+        selected_product_id=product.id,
+        ranked_product_ids=[product.id],
+        winner_reason=reason,
+        tradeoffs=["This is a separate optional purchase requiring its own confirmation."],
+        upsell_product_id=None,
+        upsell_reason=None,
+        cross_sell_product_id=None,
+        cross_sell_reason=None,
+        decision_source="deterministic",
+    )
+    request = AgentChatRequest(
+        message=f"Accept optional add-on {product.title}",
+        conversation_id=source_run.conversation_id,
+    )
+    response = AgentChatResponse(
+        reply=reason,
+        intent_source="deterministic",
+        decision_source="deterministic",
+        intent=ShoppingIntent(
+            query=product.title,
+            category=product.category,
+            max_price_paise=product.offer_price_paise,
+            preferences=[],
+        ),
+        recommendations=[recommendation],
+        winner=recommendation,
+        decision=decision,
+        account_controls_applied=True,
+        outcome="RECOMMENDATIONS",
+        resolution_kind="EXACT_MATCH",
+        focus_product_id=product.id,
+        exact_match=True,
+        evaluated_count=1,
+        eligible_count=1,
+        intent_mode="BUY",
+    )
+    metadata: dict[str, object] = {
+        "kind": "POST_PURCHASE_CROSS_SELL",
+        "source_run_id": str(source_run.id),
+        "source_proposal_id": str(source_quote.id),
+        "source_product_id": str(source_quote.product_id),
+        "relation_type": relation_type,
+        "benefit": benefit,
+    }
+    proposal = await persist_purchase_proposal(
+        session=session,
+        settings=settings,
+        buyer_user_id=buyer_user_id,
+        request=request,
+        response=response,
+        controls=controls,
+        conversation_id=source_run.conversation_id,
+        conversation_turn_id=source_run.conversation_turn_id,
+        idempotency_key=f"cross-sell:{source_run.id.hex}:{product.id.hex}",
+        proposal_metadata=metadata,
+    )
+    if proposal is None:
+        raise RuntimeError("Accepted post-purchase add-on did not create a proposal")
+    return proposal
 
 
 def _canonical_hash(payload: object) -> str:

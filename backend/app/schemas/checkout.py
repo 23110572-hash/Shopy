@@ -6,6 +6,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.agent import PurchaseProposal
+from app.schemas.catalog import CatalogProduct
 from app.schemas.orders import ShippingAddressSnapshot
 
 CheckoutAction = Literal["CREATE_ORDER", "OPEN_CHECKOUT", "RECONCILE"]
@@ -63,6 +65,31 @@ class CheckoutCallbackRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class PostPurchaseCrossSellOffer(BaseModel):
+    source_run_id: UUID
+    source_product_title: str
+    product: CatalogProduct
+    product_version: int = Field(ge=1)
+    relation_type: Literal["POST_PURCHASE_CROSS_SELL"] = "POST_PURCHASE_CROSS_SELL"
+    benefit: str = Field(min_length=1, max_length=500)
+    prompt: str = Field(min_length=1, max_length=800)
+
+
+class PostPurchaseCrossSellDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["ACCEPT", "DECLINE"]
+    product_id: UUID
+    product_version: int = Field(ge=1)
+
+
+class PostPurchaseCrossSellDecisionResponse(BaseModel):
+    source_run_id: UUID
+    decision: Literal["ACCEPT", "DECLINE"]
+    purchase_proposal: PurchaseProposal | None
+    message: str
+
+
 class PurchaseRunStatusResponse(BaseModel):
     run_id: UUID
     proposal_id: UUID
@@ -84,6 +111,8 @@ class PurchaseRunStatusResponse(BaseModel):
     fulfillment_status: str | None = None
     shipping_address: ShippingAddressSnapshot | None = None
     policy_snapshot: dict[str, Any] = Field(default_factory=dict)
+    post_purchase_offer: PostPurchaseCrossSellOffer | None = None
+    post_purchase_proposal: PurchaseProposal | None = None
 
 
 class RazorpayWebhookResponse(BaseModel):

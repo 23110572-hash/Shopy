@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.database import Database
@@ -21,6 +22,7 @@ from app.gateways.razorpay import (
     RazorpayRejectedError,
     RazorpayStandardCheckoutGateway,
 )
+from app.models.account import ShoppingAgentControls
 from app.models.agent_order import AgentFulfillmentOrder, AgentFulfillmentStatus
 from app.models.commerce import (
     PaymentAttempt,
@@ -41,13 +43,22 @@ from app.repositories.accounts import AccountRepository
 from app.repositories.commerce import CommerceRepository
 from app.repositories.orders import DeliveryAddressRepository
 from app.repositories.products import ProductRepository
+from app.schemas.agent import PurchaseProposal
+from app.schemas.catalog import CatalogProduct
 from app.schemas.checkout import (
     CheckoutCallbackRequest,
     CheckoutSessionResponse,
+    PostPurchaseCrossSellDecisionRequest,
+    PostPurchaseCrossSellDecisionResponse,
+    PostPurchaseCrossSellOffer,
     PurchaseRunStatusResponse,
     RazorpayWebhookResponse,
 )
 from app.services.orders import OrderService
+from app.services.proposals import (
+    ProposalStaleError,
+    persist_post_purchase_cross_sell_proposal,
+)
 
 RESERVATION_TTL = timedelta(minutes=15)
 
@@ -57,6 +68,12 @@ class CheckoutServiceError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.status_code = status_code
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedPostPurchaseCrossSell:
+    offer: PostPurchaseCrossSellOffer
+    controls: ShoppingAgentControls
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +200,12 @@ class CheckoutService:
             payment = await repository.get_latest_payment_for_run(run.id)
             reservation = await repository.get_reservation_for_run(run.id)
             fulfillment = await repository.get_fulfillment_for_run(run.id)
+            prepared_offer = await self._prepare_post_purchase_cross_sell(
+                session=session,
+                run=run,
+                quote=quote,
+                payment=payment,
+            )
             return _status_response(
                 run=run,
                 quote=quote,
@@ -191,6 +214,237 @@ class CheckoutService:
                 reservation=reservation,
                 fulfillment=fulfillment,
                 razorpay_api_configured=self._settings.razorpay_api_configured,
+                post_purchase_offer=(
+                    prepared_offer.offer if prepared_offer is not None else None
+                ),
+                post_purchase_proposal=_recorded_post_purchase_proposal(run),
+            )
+
+    async def _prepare_post_purchase_cross_sell(
+        self,
+        *,
+        session: AsyncSession,
+        run: PurchaseRun,
+        quote: PurchaseQuote,
+        payment: PaymentAttempt | None,
+    ) -> PreparedPostPurchaseCrossSell | None:
+        if not _is_authoritatively_captured(run, payment) or run.terminal_reason is not None:
+            return None
+        graph_state = dict(run.graph_state)
+        proposal_metadata = graph_state.get("proposal_metadata")
+        if (
+            isinstance(proposal_metadata, dict)
+            and proposal_metadata.get("kind") == "POST_PURCHASE_CROSS_SELL"
+        ):
+            return None
+        if isinstance(graph_state.get("post_purchase_cross_sell"), dict):
+            return None
+
+        controls = await AccountRepository(session).get_controls(run.buyer_user_id)
+        if controls is None or not controls.agent_enabled:
+            return None
+        price_limits = [
+            value
+            for value in (
+                controls.recommendation_price_ceiling_paise,
+                controls.per_purchase_limit_paise,
+            )
+            if value is not None
+        ]
+        max_price_paise = min(price_limits) if price_limits else None
+        candidate = await ProductRepository(session).find_post_purchase_cross_sell(
+            source_product_id=quote.product_id,
+            source_merchant_id=quote.merchant_id,
+            source_category=quote.category,
+            source_brand=quote.brand,
+            allowed_categories=controls.category_allowlist,
+            max_price_paise=max_price_paise,
+        )
+        if candidate is None:
+            return None
+
+        benefit = " ".join(candidate.benefit.split())[:500]
+        if not benefit:
+            return None
+        product = CatalogProduct.model_validate(candidate.product)
+        prompt = (
+            f"Would you also like {product.title}? {benefit} "
+            "This is optional and would be a separate purchase."
+        )[:800]
+        return PreparedPostPurchaseCrossSell(
+            offer=PostPurchaseCrossSellOffer(
+                source_run_id=run.id,
+                source_product_title=quote.title,
+                product=product,
+                product_version=product.version,
+                relation_type="POST_PURCHASE_CROSS_SELL",
+                benefit=benefit,
+                prompt=prompt,
+            ),
+            controls=controls,
+        )
+
+    async def decide_post_purchase_cross_sell(
+        self,
+        *,
+        buyer_user_id: UUID,
+        run_id: UUID,
+        request: PostPurchaseCrossSellDecisionRequest,
+    ) -> PostPurchaseCrossSellDecisionResponse:
+        async with self._database.session() as session:
+            repository = CommerceRepository(session)
+            run = await repository.get_run(
+                run_id,
+                buyer_user_id=buyer_user_id,
+                for_update=True,
+            )
+            if run is None:
+                raise CheckoutServiceError(
+                    "RUN_NOT_FOUND", "Purchase run not found", status_code=404
+                )
+            quote = await repository.get_quote_for_run(run.id)
+            payment = await repository.get_latest_payment_for_run(run.id)
+            if quote is None:
+                raise CheckoutServiceError(
+                    "QUOTE_NOT_FOUND", "Purchase quote not found", status_code=404
+                )
+            if not _is_authoritatively_captured(run, payment):
+                raise CheckoutServiceError(
+                    "PAYMENT_NOT_CAPTURED",
+                    "An optional add-on can be considered only after verified payment capture.",
+                    status_code=409,
+                )
+
+            graph_state = dict(run.graph_state)
+            recorded = graph_state.get("post_purchase_cross_sell")
+            if isinstance(recorded, dict):
+                same_decision = recorded.get("decision") == request.decision
+                same_product = (
+                    recorded.get("product_id") == str(request.product_id)
+                    and recorded.get("product_version") == request.product_version
+                )
+                if not same_decision or not same_product:
+                    raise CheckoutServiceError(
+                        "CROSS_SELL_ALREADY_DECIDED",
+                        "This optional add-on has already been accepted or declined.",
+                        status_code=409,
+                    )
+                stored_proposal = recorded.get("purchase_proposal")
+                existing_proposal = (
+                    PurchaseProposal.model_validate(stored_proposal)
+                    if isinstance(stored_proposal, dict)
+                    else None
+                )
+                return PostPurchaseCrossSellDecisionResponse(
+                    source_run_id=run.id,
+                    decision=request.decision,
+                    purchase_proposal=existing_proposal,
+                    message=(
+                        "The separate add-on proposal is ready for your confirmation."
+                        if existing_proposal is not None
+                        else "The optional add-on remains declined."
+                    ),
+                )
+
+            prepared = await self._prepare_post_purchase_cross_sell(
+                session=session,
+                run=run,
+                quote=quote,
+                payment=payment,
+            )
+            if prepared is None:
+                raise CheckoutServiceError(
+                    "CROSS_SELL_UNAVAILABLE",
+                    "No eligible optional add-on is currently available for this purchase.",
+                    status_code=409,
+                )
+            offer = prepared.offer
+            if (
+                offer.product.id != request.product_id
+                or offer.product_version != request.product_version
+            ):
+                raise CheckoutServiceError(
+                    "CROSS_SELL_CHANGED",
+                    "The optional add-on changed. Refresh the purchase status before deciding.",
+                    status_code=409,
+                )
+
+            proposal: PurchaseProposal | None = None
+            if request.decision == "ACCEPT":
+                try:
+                    proposal = await persist_post_purchase_cross_sell_proposal(
+                        session=session,
+                        settings=self._settings,
+                        buyer_user_id=buyer_user_id,
+                        source_run=run,
+                        source_quote=quote,
+                        product=offer.product,
+                        controls=prepared.controls,
+                        relation_type=offer.relation_type,
+                        benefit=offer.benefit,
+                    )
+                except ProposalStaleError as exc:
+                    raise CheckoutServiceError(
+                        "CROSS_SELL_CHANGED",
+                        "The optional add-on changed before its proposal was saved.",
+                        status_code=409,
+                    ) from exc
+
+            recorded = {
+                "decision": request.decision,
+                "decided_at": datetime.now(UTC).isoformat(),
+                "product_id": str(offer.product.id),
+                "product_version": offer.product_version,
+                "source_product_id": str(quote.product_id),
+                "relation_type": offer.relation_type,
+                "benefit": offer.benefit,
+                "purchase_proposal": (
+                    proposal.model_dump(mode="json") if proposal is not None else None
+                ),
+            }
+            graph_state["post_purchase_cross_sell"] = recorded
+            run.graph_state = graph_state
+            accepted = request.decision == "ACCEPT"
+            await repository.append_audit(
+                run_id=run.id,
+                actor="BUYER",
+                action=(
+                    "POST_PURCHASE_CROSS_SELL_ACCEPTED"
+                    if accepted
+                    else "POST_PURCHASE_CROSS_SELL_DECLINED"
+                ),
+                outcome="ALLOWED" if accepted else "INFO",
+                explanation=(
+                    "The buyer accepted one catalogue-authored add-on; a separate quote was "
+                    "created without starting a provider payment."
+                    if accepted
+                    else "The buyer declined the optional add-on; it will not be shown again."
+                ),
+                details={
+                    "source_product_id": str(quote.product_id),
+                    "offered_product_id": str(offer.product.id),
+                    "offered_product_version": offer.product_version,
+                    "relation_type": offer.relation_type,
+                    "benefit": offer.benefit,
+                    "child_run_id": str(proposal.run_id) if proposal is not None else None,
+                    "child_proposal_id": (
+                        str(proposal.proposal_id) if proposal is not None else None
+                    ),
+                    "provider_write_started": False,
+                },
+                signing_secret=_audit_secret(self._settings),
+            )
+            await session.commit()
+            return PostPurchaseCrossSellDecisionResponse(
+                source_run_id=run.id,
+                decision=request.decision,
+                purchase_proposal=proposal,
+                message=(
+                    "The separate add-on proposal is ready. Confirm its address and payment only "
+                    "if you want to continue."
+                    if accepted
+                    else "The optional add-on was declined and will not be shown again."
+                ),
             )
 
     async def confirm_payment(
@@ -1501,6 +1755,32 @@ def _normalize_payment_status(payment: ProviderPayment) -> str:
     return PaymentStatus.UNKNOWN.value
 
 
+def _recorded_post_purchase_proposal(run: PurchaseRun) -> PurchaseProposal | None:
+    recorded = dict(run.graph_state).get("post_purchase_cross_sell")
+    if not isinstance(recorded, dict) or recorded.get("decision") != "ACCEPT":
+        return None
+    payload = recorded.get("purchase_proposal")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return PurchaseProposal.model_validate(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_authoritatively_captured(
+    run: PurchaseRun,
+    payment: PaymentAttempt | None,
+) -> bool:
+    return (
+        run.state == PurchaseState.CAPTURED
+        and run.payment_state == PaymentStatus.CAPTURED.value
+        and payment is not None
+        and payment.status == PaymentStatus.CAPTURED.value
+        and payment.captured is True
+    )
+
+
 def _status_response(
     *,
     run: PurchaseRun,
@@ -1510,6 +1790,8 @@ def _status_response(
     reservation: PurchaseReservation | None,
     fulfillment: AgentFulfillmentOrder | None,
     razorpay_api_configured: bool,
+    post_purchase_offer: PostPurchaseCrossSellOffer | None = None,
+    post_purchase_proposal: PurchaseProposal | None = None,
 ) -> PurchaseRunStatusResponse:
     now = datetime.now(UTC)
     state = run.state.value
@@ -1585,6 +1867,8 @@ def _status_response(
         fulfillment_status=fulfillment.status if fulfillment else None,
         shipping_address=dict(fulfillment.shipping_address) if fulfillment else None,
         policy_snapshot=dict(fulfillment.policy_snapshot) if fulfillment else {},
+        post_purchase_offer=post_purchase_offer,
+        post_purchase_proposal=post_purchase_proposal,
     )
 
 

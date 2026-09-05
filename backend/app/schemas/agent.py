@@ -19,11 +19,18 @@ ProposalBlocker = Literal["AUTH_REQUIRED", "PAYMENT_NOT_CONFIGURED", "STALE"]
 AgentOutcome = Literal[
     "RECOMMENDATIONS",
     "CLARIFICATION",
+    "CONVERSATION",
     "NO_MATCH",
     "BLOCKED",
     "CROSS_SELL_RESULTS",
 ]
-ResolutionKind = Literal["EXACT_MATCH", "ALTERNATIVES", "CLARIFICATION_REQUIRED", "NO_MATCH"]
+ResolutionKind = Literal[
+    "EXACT_MATCH",
+    "ALTERNATIVES",
+    "CLARIFICATION_REQUIRED",
+    "CONVERSATION",
+    "NO_MATCH",
+]
 
 
 class AgentChatRequest(BaseModel):
@@ -127,6 +134,7 @@ class ShoppingUnderstanding(BaseModel):
     excluded_product_ids: list[UUID] = Field(max_length=8)
     needs_clarification: bool
     clarification_question: str | None = Field(max_length=500)
+    other_reply: str | None = Field(max_length=500)
 
     @field_validator("normalized_request", "search_query")
     @classmethod
@@ -148,10 +156,24 @@ class ShoppingUnderstanding(BaseModel):
                 result.append(normalized)
         return result
 
+    @field_validator("other_reply", mode="before")
+    @classmethod
+    def normalize_other_reply(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = " ".join(value.split())
+            return normalized or None
+        return value
+
     @model_validator(mode="after")
     def valid_clarification(self) -> "ShoppingUnderstanding":
         if self.needs_clarification and not self.clarification_question:
             raise ValueError("Clarification turns need a question")
+        if self.intent_mode == "OTHER" and self.other_reply is None:
+            raise ValueError("OTHER turns need a natural conversational reply")
+        if self.intent_mode != "OTHER" and self.other_reply is not None:
+            raise ValueError("Only OTHER turns may contain a conversational reply")
         if self.reference_status == "RESOLVED" and not self.referenced_product_ids:
             raise ValueError("Resolved references need a product ID")
         if self.reference_status != "RESOLVED" and self.referenced_product_ids:

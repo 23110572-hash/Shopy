@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, and_, case, desc, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.product import CatalogCategory, Product
+from app.models.product import CatalogCategory, CatalogCategoryRelation, Product
 
 _SEARCH_TOKEN = re.compile(r"[a-z0-9][a-z0-9-]*", re.IGNORECASE)
 
@@ -23,6 +23,13 @@ class CatalogCategoryDescriptor:
     aliases: list[str]
     facet_definitions: list[dict[str, object]]
     active_product_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class PostPurchaseCrossSellCandidate:
+    product: Product
+    benefit: str
+    relation_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,6 +160,65 @@ class ProductRepository:
         )
         by_id = {product.id: product for product in result.scalars().all()}
         return [by_id[product_id] for product_id in product_ids if product_id in by_id]
+
+    async def find_post_purchase_cross_sell(
+        self,
+        *,
+        source_product_id: UUID,
+        source_merchant_id: UUID,
+        source_category: str,
+        source_brand: str,
+        allowed_categories: Sequence[str] | None,
+        max_price_paise: int | None,
+    ) -> PostPurchaseCrossSellCandidate | None:
+        filters: list[ColumnElement[bool]] = [
+            CatalogCategoryRelation.source_category == source_category,
+            CatalogCategoryRelation.relation_type == "POST_PURCHASE_CROSS_SELL",
+            CatalogCategoryRelation.is_active.is_(True),
+            Product.merchant_id == source_merchant_id,
+            Product.id != source_product_id,
+            Product.is_active.is_(True),
+            Product.inventory_quantity > 0,
+        ]
+        if allowed_categories:
+            filters.append(Product.category.in_(allowed_categories))
+        if max_price_paise is not None:
+            filters.append(Product.offer_price_paise <= max_price_paise)
+
+        row = (
+            await self._session.execute(
+                select(
+                    Product,
+                    CatalogCategoryRelation.benefit,
+                    CatalogCategoryRelation.relation_type,
+                )
+                .join(
+                    CatalogCategoryRelation,
+                    CatalogCategoryRelation.target_category == Product.category,
+                )
+                .where(*filters)
+                .order_by(
+                    CatalogCategoryRelation.sort_order,
+                    case(
+                        (func.lower(Product.brand) == source_brand.casefold(), 0),
+                        else_=1,
+                    ),
+                    Product.offer_price_paise,
+                    Product.brand,
+                    Product.model,
+                    Product.id,
+                )
+                .limit(1)
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        product, benefit, relation_type = row
+        return PostPurchaseCrossSellCandidate(
+            product=product,
+            benefit=str(benefit),
+            relation_type=str(relation_type),
+        )
 
     async def search_agent_catalog(
         self,

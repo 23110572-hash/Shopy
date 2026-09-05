@@ -12,6 +12,8 @@ from app.schemas.checkout import (
     CheckoutCallbackRequest,
     CheckoutSessionResponse,
     CreateCheckoutRequest,
+    PostPurchaseCrossSellDecisionRequest,
+    PostPurchaseCrossSellDecisionResponse,
     PurchaseRunStatusResponse,
     RazorpayWebhookResponse,
 )
@@ -149,6 +151,27 @@ async def get_checkout_status(
         return await _service(database, settings).get_status(
             buyer_user_id=principal.user.id,
             run_id=run_id,
+        )
+    except CheckoutServiceError as error:
+        _raise_service_error(error)
+
+
+@router.post(
+    "/api/checkout/runs/{run_id}/post-purchase-cross-sell",
+    response_model=PostPurchaseCrossSellDecisionResponse,
+)
+async def decide_post_purchase_cross_sell(
+    run_id: UUID,
+    payload: PostPurchaseCrossSellDecisionRequest,
+    principal: CsrfPrincipalDependency,
+    database: DatabaseDependency,
+    settings: SettingsDependency,
+) -> PostPurchaseCrossSellDecisionResponse:
+    try:
+        return await _service(database, settings).decide_post_purchase_cross_sell(
+            buyer_user_id=principal.user.id,
+            run_id=run_id,
+            request=payload,
         )
     except CheckoutServiceError as error:
         _raise_service_error(error)

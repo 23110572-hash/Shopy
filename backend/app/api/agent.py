@@ -125,14 +125,21 @@ def _next_context(
     recommendation_ids = [str(item.product.id) for item in response.recommendations[:8]]
     has_new_product_state = bool(recommendation_ids or response.focus_product_id)
     prior_intent = previous.get("intent")
+    prior_mode = previous.get("intent_mode")
+    persistent_intent_mode = (
+        prior_mode
+        if response.intent_mode == "OTHER"
+        and prior_mode in {"BUY", "RECOMMEND", "COMPARE"}
+        else response.intent_mode
+    )
     context: dict[str, object] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "intent": (
             response.intent.model_dump(mode="json")
             if has_new_product_state or not isinstance(prior_intent, dict)
             else prior_intent
         ),
-        "intent_mode": response.intent_mode,
+        "intent_mode": persistent_intent_mode,
         "last_recommendation_ids": (
             recommendation_ids
             if recommendation_ids
@@ -301,6 +308,24 @@ async def chat_with_agent(
                 return AgentChatResponse.model_validate(duplicate.response_payload)
 
         conversation_context = dict(conversation.context) if conversation is not None else {}
+        recent_turns = (
+            await conversation_repository.list_recent_turns(conversation.id, limit=6)
+            if conversation is not None
+            else []
+        )
+        llm_conversation_context: dict[str, object] = {
+            **conversation_context,
+            "profile_display_name": (
+                principal.user.display_name if principal is not None else None
+            ),
+            "recent_turns": [
+                {
+                    "user": turn.user_message[:500],
+                    "assistant": turn.assistant_reply[:500],
+                }
+                for turn in recent_turns
+            ],
+        }
         reference_products = [
             CatalogProduct.model_validate(product)
             for product in await products.get_active_many(
@@ -311,7 +336,7 @@ async def chat_with_agent(
             products,
             llm_gateway,
             controls=runtime_controls,
-            conversation_context=conversation_context,
+            conversation_context=llm_conversation_context,
             reference_products=reference_products,
             cross_sell_allowed=request.cross_sell_consent is True,
         ).chat(request)

@@ -74,6 +74,62 @@ class CatalogCategory(TimestampMixin, Base):
     )
 
 
+class CatalogCategoryRelation(TimestampMixin, Base):
+    """Catalogue-authored compatibility between source and add-on categories."""
+
+    __tablename__ = "catalog_category_relations"
+    __table_args__ = (
+        CheckConstraint(
+            "source_category <> target_category",
+            name="different_categories",
+        ),
+        CheckConstraint("sort_order >= 0", name="sort_order_non_negative"),
+        UniqueConstraint(
+            "source_category",
+            "target_category",
+            "relation_type",
+            name="uq_catalog_category_relations_source_target_type",
+        ),
+        Index(
+            "ix_catalog_category_relations_active_source",
+            "source_category",
+            "relation_type",
+            "is_active",
+            "sort_order",
+        ),
+    )
+
+    source_category: Mapped[str] = mapped_column(
+        String(CATEGORY_SLUG_MAX_LENGTH),
+        ForeignKey("catalog_categories.slug", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    target_category: Mapped[str] = mapped_column(
+        String(CATEGORY_SLUG_MAX_LENGTH),
+        ForeignKey("catalog_categories.slug", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    relation_type: Mapped[str] = mapped_column(
+        String(40),
+        primary_key=True,
+        default="POST_PURCHASE_CROSS_SELL",
+        server_default="POST_PURCHASE_CROSS_SELL",
+    )
+    benefit: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    sort_order: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+
+
 class Product(TimestampMixin, Base):
     __tablename__ = "products"
     __table_args__ = (

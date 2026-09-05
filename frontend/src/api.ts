@@ -4,7 +4,8 @@ import type {
   AgentRunHistoryResponse, AuditHistoryResponse, AuthResponse, CatalogCategoryList, CatalogPage,
   CheckoutCallback, CheckoutSession, CustomerOrder, DeliveryAddress, DeliveryAddressInput,
   DeliveryAddressList, HealthStatus, LoginRequest, OrderHistoryResponse, OrderListResponse,
-  PlaceOrderRequest, PlaceOrderResponse, ProductCategory, PurchaseRunStatus, SignupRequest,
+  PlaceOrderRequest, PlaceOrderResponse, PostPurchaseCrossSellDecisionRequest,
+  PostPurchaseCrossSellDecisionResponse, ProductCategory, PurchaseRunStatus, SignupRequest,
   TransactionHistoryResponse,
 } from './types'
 
@@ -98,6 +99,7 @@ export function createCheckoutOrder(proposalId: string, addressId?: string) {
   return requestJson<CheckoutSession>('/api/checkout/orders', { method: 'POST', headers: { ...protectedHeaders(), 'Idempotency-Key': proposalKey(proposalId) }, body: JSON.stringify({ proposal_id: proposalId, address_id: addressId }) })
 }
 export const fetchCheckoutStatus = (runId: string, signal?: AbortSignal) => requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}`, { signal })
+export const decidePostPurchaseCrossSell = (runId: string, payload: PostPurchaseCrossSellDecisionRequest) => requestJson<PostPurchaseCrossSellDecisionResponse>(`/api/checkout/runs/${runId}/post-purchase-cross-sell`, { method: 'POST', headers: protectedHeaders(), body: JSON.stringify(payload) })
 export const confirmCheckoutPayment = (runId: string, callback: CheckoutCallback) => requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}/confirm`, { method: 'POST', headers: protectedHeaders(), body: JSON.stringify(callback) })
 export const reconcileCheckoutPayment = (runId: string) => requestJson<PurchaseRunStatus>(`/api/checkout/runs/${runId}/reconcile`, { method: 'POST', headers: protectedHeaders() })
 

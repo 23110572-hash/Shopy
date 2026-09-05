@@ -195,6 +195,10 @@ class ShoppingGraph:
                 previous_intent.model_dump(mode="json") if previous_intent else None
             ),
             "previous_intent_mode": self._conversation_context.get("intent_mode"),
+            "profile_display_name": self._conversation_context.get(
+                "profile_display_name"
+            ),
+            "recent_turns": self._conversation_context.get("recent_turns", []),
             "allowed_previous_products": [
                 _compact_product(product) for product in self._reference_products
             ],
@@ -724,6 +728,7 @@ class ShoppingGraph:
         )
 
     def _compose_response(self, state: ShoppingGraphState) -> ShoppingGraphState:
+        understanding = state.get("understanding")
         intent = state.get(
             "intent",
             ShoppingIntent(query="", category=None, max_price_paise=None, preferences=[]),
@@ -755,11 +760,12 @@ class ShoppingGraph:
             resolution_kind = "NO_MATCH"
         elif intent_mode == "OTHER":
             reply = (
-                "I can discover, compare, or buy products from Shopy's live catalogue. "
-                "Tell me what you need, how you will use it, and any budget or preferences."
+                understanding.other_reply
+                if understanding is not None and understanding.other_reply is not None
+                else "Hello! What would you like to shop for today?"
             )
-            outcome = "NO_MATCH"
-            resolution_kind = "NO_MATCH"
+            outcome = "CONVERSATION"
+            resolution_kind = "CONVERSATION"
         elif winner is not None and decision is not None:
             action = "selected" if intent_mode == "BUY" else "recommend"
             reply = (

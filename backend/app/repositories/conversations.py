@@ -82,6 +82,17 @@ class ConversationRepository:
         )
         return result.scalars().all()
 
+    async def list_recent_turns(
+        self, conversation_id: UUID, *, limit: int = 6
+    ) -> Sequence[AgentConversationTurn]:
+        result = await self._session.execute(
+            select(AgentConversationTurn)
+            .where(AgentConversationTurn.conversation_id == conversation_id)
+            .order_by(AgentConversationTurn.sequence_number.desc())
+            .limit(limit)
+        )
+        return list(reversed(result.scalars().all()))
+
     async def close(self, conversation: AgentConversation) -> None:
         conversation.status = AgentConversationStatus.CLOSED.value
         await self._session.flush()

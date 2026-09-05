@@ -63,8 +63,8 @@ export interface CartItem { product: CatalogProduct; quantity: number }
 
 export type AgentIntentSource = 'deterministic' | 'openrouter' | 'deterministic_fallback'
 export type AgentDecisionSource = AgentIntentSource
-export type AgentOutcome = 'RECOMMENDATIONS' | 'CLARIFICATION' | 'NO_MATCH' | 'BLOCKED' | 'CROSS_SELL_RESULTS'
-export type AgentResolutionKind = 'EXACT_MATCH' | 'ALTERNATIVES' | 'CLARIFICATION_REQUIRED' | 'NO_MATCH'
+export type AgentOutcome = 'RECOMMENDATIONS' | 'CLARIFICATION' | 'CONVERSATION' | 'NO_MATCH' | 'BLOCKED' | 'CROSS_SELL_RESULTS'
+export type AgentResolutionKind = 'EXACT_MATCH' | 'ALTERNATIVES' | 'CLARIFICATION_REQUIRED' | 'CONVERSATION' | 'NO_MATCH'
 export type AgentIntentMode = 'RECOMMEND' | 'BUY' | 'COMPARE' | 'REFINE' | 'OTHER'
 
 export interface ShoppingIntent {
@@ -168,6 +168,26 @@ export interface CheckoutSession {
   allowed_actions: CheckoutAction[]
 }
 export interface CheckoutCallback { razorpay_payment_id: string; razorpay_order_id: string; razorpay_signature: string }
+export interface PostPurchaseCrossSellOffer {
+  source_run_id: string
+  source_product_title: string
+  product: CatalogProduct
+  product_version: number
+  relation_type: 'POST_PURCHASE_CROSS_SELL'
+  benefit: string
+  prompt: string
+}
+export interface PostPurchaseCrossSellDecisionRequest {
+  decision: 'ACCEPT' | 'DECLINE'
+  product_id: string
+  product_version: number
+}
+export interface PostPurchaseCrossSellDecisionResponse {
+  source_run_id: string
+  decision: 'ACCEPT' | 'DECLINE'
+  purchase_proposal: PurchaseProposal | null
+  message: string
+}
 export interface PurchaseRunStatus {
   run_id: string
   proposal_id: string
@@ -189,6 +209,8 @@ export interface PurchaseRunStatus {
   fulfillment_status: string | null
   shipping_address: ShippingAddressSnapshot | null
   policy_snapshot: Record<string, unknown>
+  post_purchase_offer: PostPurchaseCrossSellOffer | null
+  post_purchase_proposal: PurchaseProposal | null
 }
 
 export interface AgentChatResponse {
