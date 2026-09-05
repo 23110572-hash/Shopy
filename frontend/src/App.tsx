@@ -177,7 +177,145 @@ function CatalogImage({ product, imgClassName, fallback }: { product: CatalogPro
   )
 }
 
-function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (product: CatalogProduct) => void }) {
+const specificationUnits: Record<string, string> = {
+  battery_capacity_mah: ' mAh',
+  battery_life_hours: ' hours',
+  display_size_inches: ' inches',
+  refresh_rate_hz: ' Hz',
+  weight_g: ' g',
+  wired_charging_w: ' W',
+}
+
+function specificationLabel(key: string): string {
+  const labels: Record<string, string> = {
+    active_noise_cancellation: 'Active noise cancellation',
+    rear_cameras: 'Rear cameras',
+    front_cameras: 'Front cameras',
+    camera_features: 'Camera features',
+    battery_capacity_mah: 'Battery capacity',
+    battery_life_hours: 'Battery life',
+    battery_claim: 'Battery claim',
+    wired_charging_w: 'Wired charging',
+    refresh_rate_hz: 'Refresh rate',
+    display_size_inches: 'Display size',
+    water_dust_resistance: 'Water and dust resistance',
+    water_resistance: 'Water resistance',
+    processor_family: 'Processor family',
+    configuration_note: 'Configuration note',
+  }
+  return labels[key] ?? key.replaceAll('_', ' ').replace(/^./, (letter) => letter.toUpperCase())
+}
+
+function specificationValue(key: string, value: unknown): string {
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No'
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ')
+  if (value !== null && typeof value === 'object') {
+    return Object.entries(value)
+      .map(([nestedKey, nestedValue]) => `${specificationLabel(nestedKey)}: ${String(nestedValue)}`)
+      .join(' · ')
+  }
+  return `${String(value)}${specificationUnits[key] ?? ''}`
+}
+
+function ProductDetailsDialog({ product, onClose }: { product: CatalogProduct; onClose: () => void }) {
+  const dialogRef = useRef<HTMLElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const specifications = Object.entries(product.specifications)
+    .filter(([, value]) => value !== null && value !== '' && (!Array.isArray(value) || value.length > 0))
+
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    closeRef.current?.focus()
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ))
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown)
+      previousFocus?.focus()
+    }
+  }, [onClose])
+
+  return (
+    <div
+      className="product-details-backdrop"
+      role="presentation"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <section
+        ref={dialogRef}
+        className="product-details-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-details-title"
+      >
+        <button ref={closeRef} className="product-details-close" type="button" onClick={onClose} aria-label="Close product details">×</button>
+        <div className="product-details-hero">
+          <div className={`product-details-visual visual-${product.category}`}>
+            <CatalogImage
+              product={product}
+              imgClassName="product-details-image"
+              fallback={<span className="product-details-glyph" aria-hidden="true">{categoryGlyph(product.category)}</span>}
+            />
+          </div>
+          <div className="product-details-summary">
+            <span className="section-label">{product.brand} · {product.category}</span>
+            <h2 id="product-details-title">{product.title}</h2>
+            <p>{product.description}</p>
+            <div className="product-details-price">
+              <strong>{formatPrice(product.offer_price_paise)}</strong>
+              {product.mrp_paise && product.mrp_paise > product.offer_price_paise ? <s>{formatPrice(product.mrp_paise)}</s> : null}
+            </div>
+            <div className="product-details-meta">
+              <span><small>Model</small><strong>{product.model}</strong></span>
+              <span><small>SKU</small><strong>{product.sku}</strong></span>
+              <span><small>Availability</small><strong>{product.in_stock ? `${product.inventory_quantity} in stock` : 'Out of stock'}</strong></span>
+              <span><small>Verified</small><strong>{new Date(product.specifications_verified_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</strong></span>
+            </div>
+          </div>
+        </div>
+        <div className="product-specifications">
+          <div className="product-specifications-heading">
+            <span className="section-label">CATALOGUE DATA</span>
+            <h3>Product details</h3>
+          </div>
+          {specifications.length > 0 ? (
+            <dl className="product-specification-grid">
+              {specifications.map(([key, value]) => (
+                <div key={key}>
+                  <dt>{specificationLabel(key)}</dt>
+                  <dd>{specificationValue(key, value)}</dd>
+                </div>
+              ))}
+            </dl>
+          ) : <p className="product-specifications-empty">No additional specifications are stored for this product.</p>}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function ProductCard({ product, onAdd, onDetails }: { product: CatalogProduct; onAdd: (product: CatalogProduct) => void; onDetails: (product: CatalogProduct) => void }) {
   const discount = product.mrp_paise
     ? Math.max(0, Math.round((1 - product.offer_price_paise / product.mrp_paise) * 100))
     : 0
@@ -206,8 +344,8 @@ function ProductCard({ product, onAdd }: { product: CatalogProduct; onAdd: (prod
           {product.mrp_paise && product.mrp_paise > product.offer_price_paise ? <s>{formatPrice(product.mrp_paise)}</s> : null}
         </div>
         <div className="product-actions">
-          <a href={product.source_url} target="_blank" rel="noreferrer">Official details ↗</a>
-          <button type="button" onClick={() => onAdd(product)} disabled={!product.in_stock}>
+          <button className="product-details-trigger" type="button" onClick={() => onDetails(product)}>Details</button>
+          <button className="product-add-button" type="button" onClick={() => onAdd(product)} disabled={!product.in_stock}>
             {product.in_stock ? 'Add to cart' : 'Unavailable'}
           </button>
         </div>
@@ -225,10 +363,11 @@ interface HomeProps {
   onQuery: (value: string) => void
   onCategory: (value: ProductCategory | 'all') => void
   onAdd: (product: CatalogProduct) => void
+  onDetails: (product: CatalogProduct) => void
   onAgent: () => void
 }
 
-function HomeView({ catalog, query, category, loading, error, onQuery, onCategory, onAdd, onAgent }: HomeProps) {
+function HomeView({ catalog, query, category, loading, error, onQuery, onCategory, onAdd, onDetails, onAgent }: HomeProps) {
   const [catalogCategories, setCatalogCategories] = useState<CatalogCategorySummary[]>([])
 
   useEffect(() => {
@@ -271,7 +410,7 @@ function HomeView({ catalog, query, category, loading, error, onQuery, onCategor
         {error ? <div className="state-card error"><strong>Catalogue unavailable</strong><p>{error}</p></div> : null}
         {!error && !loading && catalog?.items.length === 0 ? <div className="state-card"><strong>No matching products</strong><p>Try a broader search or another category.</p></div> : null}
         <div className={loading ? 'product-grid loading' : 'product-grid'}>
-          {catalog?.items.map((product) => <ProductCard key={product.id} product={product} onAdd={onAdd} />)}
+          {catalog?.items.map((product) => <ProductCard key={product.id} product={product} onAdd={onAdd} onDetails={onDetails} />)}
         </div>
       </section>
     </main>
@@ -574,6 +713,7 @@ function App() {
   const [error, setError] = useState<string | null>(null)
   const [cart, setCart] = useState<CartItem[]>(loadCart)
   const [agentOpen, setAgentOpen] = useState(false)
+  const [selectedProduct, setSelectedProduct] = useState<CatalogProduct | null>(null)
   const [toast, setToast] = useState<string | null>(null)
   const [profile, setProfile] = useState<AccountProfile | null>(null)
   const [sessionChecked, setSessionChecked] = useState(false)
@@ -615,11 +755,11 @@ function App() {
   }, [agentLocked])
 
   useEffect(() => {
-    if (!agentOpen) return
+    if (!agentOpen && selectedProduct === null) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => { document.body.style.overflow = previousOverflow }
-  }, [agentOpen])
+  }, [agentOpen, selectedProduct])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -654,10 +794,17 @@ function App() {
       setToast('Shopy Agent is off. Turn it on in Profile → Agent controls.')
       return
     }
+    if (value) setSelectedProduct(null)
     setAgentOpen(value)
   }
 
+  function showProductDetails(product: CatalogProduct) {
+    setAgentOpen(false)
+    setSelectedProduct(product)
+  }
+
   function navigate(next: AppPage) {
+    setSelectedProduct(null)
     setPage(next)
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -680,7 +827,7 @@ function App() {
   return (
     <div className="app-shell">
       <Navigation page={page} cartCount={cartCount} online={health?.database === 'ready'} onNavigate={navigate} />
-      {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onAgent={() => setAgentVisibility(true)} /> : null}
+      {page === 'home' ? <HomeView catalog={catalog} query={query} category={category} loading={loading} error={error} onQuery={setQuery} onCategory={setCategory} onAdd={addToCart} onDetails={showProductDetails} onAgent={() => setAgentVisibility(true)} /> : null}
       {page === 'cart' ? <CartView cart={cart} onQuantity={changeQuantity} onRemove={(id) => setCart((current) => current.filter((item) => item.product.id !== id))} onBrowse={() => navigate('home')} onClear={() => setCart([])} onSignIn={() => navigate('profile')} signedIn={profile !== null} sessionChecked={sessionChecked} /> : null}
       {page === 'profile' ? <AccountCenter health={health} onSession={setProfile} onAgentEnabledChange={setAgentEnabled} /> : null}
       <footer className="site-footer">
@@ -690,6 +837,7 @@ function App() {
         <a href="https://shopy-zewo.onrender.com/docs" target="_blank" rel="noreferrer">API docs ↗</a>
       </footer>
       {toast ? <div className="cart-toast"><Icon name="check" />{toast}</div> : null}
+      {selectedProduct ? <ProductDetailsDialog product={selectedProduct} onClose={() => setSelectedProduct(null)} /> : null}
       {agentOpen && !agentLocked ? <AgentWorkspace profile={profile} sessionChecked={sessionChecked} onSignIn={() => { setAgentOpen(false); navigate('profile') }} onClose={() => setAgentOpen(false)} /> : null}
       <FloatingAgent open={false} onOpen={setAgentVisibility} onAdd={addToCart} locked={agentLocked} />
     </div>
