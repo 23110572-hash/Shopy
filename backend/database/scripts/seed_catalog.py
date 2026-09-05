@@ -290,7 +290,7 @@ def _ensure_merchant(connection: Connection) -> UUID:
             {
                 "id": merchant_id,
                 "owner_user_id": admin_id,
-                "name": "MandateGuard Technology Store",
+                "name": "Shopy Limited",
                 "slug": SEED_MERCHANT_SLUG,
             },
         )
